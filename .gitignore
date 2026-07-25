@@ -1,0 +1,25 @@
+# Local analysis output
+.tmp/
+tmp/
+*.tmp
+
+# PowerShell and editor artifacts
+*.log
+*.bak
+*.swp
+*~
+.vscode/
+.idea/
+
+# Operating-system artifacts
+.DS_Store
+Thumbs.db
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Deployment output
+_deploy/
+deployment-target/

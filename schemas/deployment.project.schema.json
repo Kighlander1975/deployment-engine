@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/Kighlander1975/deployment-engine/main/schemas/deployment.project.schema.json",
+  "title": "SHK-MOMM Deployment Project Manifest",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schemaVersion",
+    "project",
+    "repository",
+    "deployment",
+    "protection",
+    "classification",
+    "rules"
+  ],
+  "properties": {
+    "schemaVersion": { "type": "string" },
+    "project": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["id", "name", "root", "applicationRoot", "type"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "root": { "type": "string", "minLength": 1 },
+        "applicationRoot": { "type": "string", "minLength": 1 },
+        "type": { "type": "string", "minLength": 1 }
+      }
+    },
+    "repository": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["branch"],
+      "properties": {
+        "branch": { "type": "string", "minLength": 1 }
+      }
+    },
+    "deployment": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["environment", "serverRoot", "markerFile"],
+      "properties": {
+        "environment": { "type": "string", "minLength": 1 },
+        "serverRoot": { "type": "string", "minLength": 1 },
+        "markerFile": { "type": "string", "minLength": 1 }
+      }
+    },
+    "protection": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["neverUpload", "neverOverwrite"],
+      "properties": {
+        "neverUpload": { "type": "array", "items": { "type": "string" } },
+        "neverOverwrite": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "classification": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "documentation",
+        "backendRuntime",
+        "frontendSource",
+        "frontendBuild",
+        "phpDependencies",
+        "frontendDependencies",
+        "migrations",
+        "seeders",
+        "environmentContract",
+        "ignored"
+      ],
+      "properties": {
+        "documentation": { "type": "array", "items": { "type": "string" } },
+        "backendRuntime": { "type": "array", "items": { "type": "string" } },
+        "frontendSource": { "type": "array", "items": { "type": "string" } },
+        "frontendBuild": { "type": "array", "items": { "type": "string" } },
+        "phpDependencies": { "type": "array", "items": { "type": "string" } },
+        "frontendDependencies": { "type": "array", "items": { "type": "string" } },
+        "migrations": { "type": "array", "items": { "type": "string" } },
+        "seeders": { "type": "array", "items": { "type": "string" } },
+        "environmentContract": { "type": "array", "items": { "type": "string" } },
+        "ignored": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "rules": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "composerTrigger",
+        "frontendBuildTrigger",
+        "migrationTrigger",
+        "environmentTrigger",
+        "cleanupTrigger"
+      ],
+      "properties": {
+        "composerTrigger": { "type": "array", "items": { "type": "string" } },
+        "frontendBuildTrigger": { "type": "array", "items": { "type": "string" } },
+        "migrationTrigger": { "type": "array", "items": { "type": "string" } },
+        "environmentTrigger": { "type": "array", "items": { "type": "string" } },
+        "cleanupTrigger": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}

@@ -1,0 +1,123 @@
+{
+  "$schema": "../../schemas/deployment.project.schema.json",
+  "schemaVersion": "0.1",
+  "project": {
+    "id": "example-laravel-app",
+    "name": "Example Laravel Application",
+    "root": ".",
+    "applicationRoot": "laravel_app",
+    "type": "laravel"
+  },
+  "repository": {
+    "branch": "main"
+  },
+  "deployment": {
+    "environment": "staging",
+    "serverRoot": "deployment-target",
+    "markerFile": "deployment-target\\.deploy-version"
+  },
+  "protection": {
+    "neverUpload": [
+      ".git/**",
+      "node_modules/**",
+      "vendor/**",
+      "storage/**",
+      ".env",
+      ".env.*",
+      "_deploy/**",
+      "tests/**",
+      "public/hot"
+    ],
+    "neverOverwrite": [
+      ".env",
+      "storage/**",
+      "storage/app/private/**",
+      "public/.htaccess",
+      ".deploy-version"
+    ]
+  },
+  "classification": {
+    "documentation": [
+      "*.md",
+      "docs/**",
+      "laravel_app/resources/js/modules/README.md"
+    ],
+    "backendRuntime": [
+      "laravel_app/app/**",
+      "laravel_app/bootstrap/**",
+      "laravel_app/config/**",
+      "laravel_app/routes/**",
+      "laravel_app/resources/views/**"
+    ],
+    "frontendSource": [
+      "laravel_app/resources/js/**",
+      "laravel_app/resources/css/**",
+      "laravel_app/vite.config.*",
+      "laravel_app/tailwind.config.*"
+    ],
+    "frontendBuild": [
+      "laravel_app/public/build/**"
+    ],
+    "phpDependencies": [
+      "laravel_app/composer.json",
+      "laravel_app/composer.lock"
+    ],
+    "frontendDependencies": [
+      "laravel_app/package.json",
+      "laravel_app/package-lock.json"
+    ],
+    "migrations": [
+      "laravel_app/database/migrations/**"
+    ],
+    "seeders": [
+      "laravel_app/database/seeders/**"
+    ],
+    "environmentContract": [
+      "laravel_app/.env.example"
+    ],
+    "protectedServerFile": [
+      "laravel_app/public/.htaccess",
+      "deployment-target/.deploy-version"
+    ],
+    "persistentData": [
+      "laravel_app/storage/**"
+    ],
+    "ignored": [
+      ".git/**",
+      "laravel_app/node_modules/**",
+      "laravel_app/vendor/**",
+      "laravel_app/storage/**",
+      "laravel_app/.env",
+      "laravel_app/.env.*",
+      "_deploy/**",
+      "laravel_app/tests/**",
+      "laravel_app/public/hot"
+    ]
+  },
+  "rules": {
+    "composerTrigger": [
+      "laravel_app/composer.lock"
+    ],
+    "frontendBuildTrigger": [
+      "laravel_app/package-lock.json",
+      "laravel_app/resources/js/**",
+      "laravel_app/resources/css/**",
+      "laravel_app/vite.config.*",
+      "laravel_app/tailwind.config.*"
+    ],
+    "migrationTrigger": [
+      "laravel_app/database/migrations/**"
+    ],
+    "environmentTrigger": [
+      "laravel_app/.env.example"
+    ],
+    "cleanupTrigger": [
+      "laravel_app/app/**",
+      "laravel_app/bootstrap/**",
+      "laravel_app/config/**",
+      "laravel_app/routes/**",
+      "laravel_app/resources/views/**",
+      "laravel_app/public/build/**"
+    ]
+  }
+}
