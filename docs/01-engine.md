@@ -1,6 +1,6 @@
 # Engine Pipeline
 
-Die Pipeline der Version `0.1` ist bewusst in Analyse, Planerzeugung, Capability-Aufloesung und spaetere Ausfuehrung getrennt.
+Die Pipeline der Version `0.1` ist bewusst in Analyse, Planerzeugung, Capability-Aufloesung, Tool Discovery und spaetere Ausfuehrung getrennt.
 
 ## Project Detection
 
@@ -92,6 +92,42 @@ Dabei ist zwischen fachlichem Schritt und technischem Befehl zu unterscheiden:
 - Technischer Anzeigebefehl im resolved Plan: zum Beispiel `php artisan migrate --force`, `php artisan about` oder `composer install --no-dev --optimize-autoloader`.
 
 Kuenftige technische Werkzeuge wie `7z`, `zip`, `unzip`, `tar`, `composer` oder `artisan` sollen austauschbar bleiben, ohne dass sich das fachliche Planmodell aendert.
+
+## Tool Discovery
+
+Tool Discovery erzeugt ein neutrales Tool Inventory.
+
+```text
+Resolved Execution Plan
+    -> Tool Discovery
+    -> Tool Inventory
+    -> spaetere Adapter Selection
+```
+
+Die Discovery erkennt nur lokal verfuegbare Werkzeuge und optionale Projektdateien. Sie installiert nichts, startet keine Builds, startet keine Container, fuehrt keine Deployment-Schritte aus und trifft keine Adapterentscheidung.
+
+In Phase 2a werden mindestens folgende globale Werkzeuge ueber eine geschlossene Allowlist erkannt:
+
+- `php`
+- `composer`
+- `docker`
+- `7z`
+- `zip`
+- `tar`
+
+Projektbezogen wird `artisan` als Datei erkannt, wenn ein Projektpfad angegeben wurde. Fehlende Werkzeuge oder fehlende optionale Projektdateien sind normale Inventory-Ergebnisse.
+
+Versionsabfragen erfolgen nur ueber fest definierte Probe-Argumente aus dem Tool-Katalog. Es gibt keine freien Commands, keine Shell-Verkettung und keine dynamischen Probe-Argumente.
+
+`available` beschreibt, ob ein Executable gefunden wurde. `status` beschreibt das Ergebnis der Discovery beziehungsweise Versionsprobe.
+
+Das Statusmodell umfasst:
+
+- `available`
+- `not-found`
+- `version-unavailable`
+- `probe-failed`
+- `unsupported`
 
 ## Human Gates
 

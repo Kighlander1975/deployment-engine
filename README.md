@@ -15,6 +15,8 @@ Analyzer
     -> Execution Plan Builder
     -> Capability Resolver
     -> Resolved Execution Plan
+    -> Tool Discovery
+    -> Tool Inventory
     -> spaeterer Executor
 ```
 
@@ -28,6 +30,8 @@ Technische Befehle stammen aus dem zentralen Capability-Katalog. Damit bleibt de
 
 Capability-Regeln bilden die minimale Sicherheitsbasis. Builder-Regeln duerfen diese Basis nur ergaenzen oder verschaerfen: Validation-Patterns werden capability-first vereinigt, boolesche Sicherheitsanforderungen per OR zusammengefuehrt, erlaubte Fortsetzungszustaende geschnitten und widerspruechliche Execution Modes abgelehnt.
 
+Tool Discovery ist eine neutrale, read-only Inventur lokaler Werkzeuge und optionaler Projektdateien. Sie trifft keine Adapterentscheidung, installiert nichts und fuehrt keine Deployment-Schritte aus. Fehlende Werkzeuge sind normale Inventory-Ergebnisse.
+
 ## Unterstuetzter Umfang in Version 0.1
 
 - Projektmanifest lesen und validieren
@@ -39,6 +43,7 @@ Capability-Regeln bilden die minimale Sicherheitsbasis. Builder-Regeln duerfen d
 - Konsolenzusammenfassung und optionales Analyzer-JSON erzeugen
 - Analyzer-JSON in einen Execution Plan mit Capability IDs uebersetzen
 - Capability IDs in einen Resolved Execution Plan aufloesen
+- lokale Tool Discovery fuer `php`, `composer`, `docker`, `7z`, `zip`, `tar` und projektbezogen `artisan`
 - Agent-, Human- und Review-Schritte unterscheiden
 - verbindliche Pausepunkte, Abhaengigkeiten und Validierungsanforderungen modellieren
 - Migrationen als High-Risk-Schritte mit Safety Review, `migrate:status` und ausdruecklicher Freigabe modellieren
@@ -81,6 +86,47 @@ Die `plan`-Ausgabe ist bereits ein resolved Plan. Der Resolver ist auch separat 
     -PlanPath C:\path\to\execution-plan.json `
     -Format Json
 ```
+
+## Tool Discovery ausfuehren
+
+```powershell
+.\tools\deployment-engine\bin\deployment-engine.ps1 discover-tools `
+    -ProjectPath C:\path\to\your-project `
+    -Format Json
+```
+
+Beispielstruktur:
+
+```json
+{
+  "schemaVersion": "0.1",
+  "platform": {
+    "os": "windows",
+    "architecture": "x64",
+    "shell": "powershell"
+  },
+  "project": {
+    "available": true,
+    "artisan": {
+      "available": true,
+      "path": "C:\\path\\to\\project\\artisan"
+    }
+  },
+  "tools": {
+    "php": {
+      "available": true,
+      "path": "C:\\php\\php.exe",
+      "version": "PHP 8.3.0",
+      "status": "available",
+      "diagnostic": ""
+    }
+  }
+}
+```
+
+`available` beschreibt, ob ein Executable gefunden wurde. `status` beschreibt das Ergebnis der Discovery beziehungsweise Versionsprobe.
+
+Statuswerte sind `available`, `not-found`, `version-unavailable`, `probe-failed` und `unsupported`. In Phase 2a gibt es noch keine Capability-zu-Tool-Zuordnung und keine Adapter Selection.
 
 Exit-Codes:
 
