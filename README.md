@@ -17,6 +17,8 @@ Analyzer
     -> Resolved Execution Plan
     -> Tool Discovery
     -> Tool Inventory
+    -> Remote Discovery Plan
+    -> Remote Tool Inventory
     -> spaeterer Executor
 ```
 
@@ -32,6 +34,8 @@ Capability-Regeln bilden die minimale Sicherheitsbasis. Builder-Regeln duerfen d
 
 Tool Discovery ist eine neutrale, read-only Inventur lokaler Werkzeuge und optionaler Projektdateien. Sie trifft keine Adapterentscheidung, installiert nichts und fuehrt keine Deployment-Schritte aus. Fehlende Werkzeuge sind normale Inventory-Ergebnisse.
 
+Remote Discovery erzeugt dagegen nur einen sicheren Human-Gate-Pruefplan. Die Engine besitzt keinen SSH-Zugriff und fuehrt keine Serverbefehle aus; der Benutzer fuehrt ausschliesslich die angezeigten statischen Pruefkommandos selbst aus und gibt die vollstaendige markierte Konsolenausgabe zur Validierung zurueck.
+
 ## Unterstuetzter Umfang in Version 0.1
 
 - Projektmanifest lesen und validieren
@@ -44,6 +48,7 @@ Tool Discovery ist eine neutrale, read-only Inventur lokaler Werkzeuge und optio
 - Analyzer-JSON in einen Execution Plan mit Capability IDs uebersetzen
 - Capability IDs in einen Resolved Execution Plan aufloesen
 - lokale Tool Discovery fuer `php`, `composer`, `docker`, `7z`, `zip`, `tar` und projektbezogen `artisan`
+- Remote Tool Discovery als Human Gate mit statischer Probe-Allowlist und markierter Konsolenausgabe
 - Agent-, Human- und Review-Schritte unterscheiden
 - verbindliche Pausepunkte, Abhaengigkeiten und Validierungsanforderungen modellieren
 - Migrationen als High-Risk-Schritte mit Safety Review, `migrate:status` und ausdruecklicher Freigabe modellieren
@@ -127,6 +132,27 @@ Beispielstruktur:
 `available` beschreibt, ob ein Executable gefunden wurde. `status` beschreibt das Ergebnis der Discovery beziehungsweise Versionsprobe.
 
 Statuswerte sind `available`, `not-found`, `version-unavailable`, `probe-failed` und `unsupported`. In Phase 2a gibt es noch keine Capability-zu-Tool-Zuordnung und keine Adapter Selection.
+
+## Remote Tool Discovery ausfuehren
+
+```powershell
+.\tools\deployment-engine\bin\deployment-engine.ps1 remote-discovery-plan `
+    -Platform linux `
+    -OutputPath C:\path\to\your-project\.tmp\remote-discovery-plan.json
+```
+
+Der Plan enthaelt ein Human Gate, einen deterministischen `planFingerprint`, feste Probe-IDs, feste Anzeigebefehle und ein Marker-Template. Vor den Projektprobes wechselt der Benutzer selbst in das bekannte Projektverzeichnis; Projektpfade werden nicht in Shell-Kommandos interpoliert.
+
+Nach der manuellen Ausfuehrung wird die vollstaendige Ausgabe im Markerformat ausgewertet:
+
+```powershell
+.\tools\deployment-engine\bin\deployment-engine.ps1 resolve-remote-discovery `
+    -PlanPath C:\path\to\your-project\.tmp\remote-discovery-plan.json `
+    -ResponsePath C:\path\to\your-project\.tmp\remote-discovery-response.txt `
+    -OutputPath C:\path\to\your-project\.tmp\remote-tool-inventory.json
+```
+
+Eine blosse Bestaetigung wie `erledigt` reicht nicht aus. Unbekannte, doppelte oder unvollstaendige Marker werden kontrolliert abgelehnt beziehungsweise als unvollstaendig bewertet. Die Ausgabe wird nur als Text verarbeitet und in ein Remote Tool Inventory ueberfuehrt. Es findet keine Adapter Selection, Installation oder Deployment-Ausfuehrung statt. Keine Passwoerter, Tokens, Zugangsdaten oder `.env`-Inhalte einfuegen.
 
 Exit-Codes:
 

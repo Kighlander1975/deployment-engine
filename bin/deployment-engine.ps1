@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0, Mandatory = $true)]
-    [ValidateSet('plan', 'discover-tools')]
+    [ValidateSet('plan', 'discover-tools', 'remote-discovery-plan', 'resolve-remote-discovery')]
     [string] $Command,
 
     [string] $Analysis,
@@ -9,6 +9,12 @@ param(
     [string] $Manifest,
 
     [string] $ProjectPath,
+
+    [string] $Platform,
+
+    [string] $PlanPath,
+
+    [string] $ResponsePath,
 
     [string] $Format,
 
@@ -52,6 +58,39 @@ switch ($Command) {
 
         $discoveryPath = Join-Path -Path $engineRoot -ChildPath 'src/ps1/Invoke-ToolDiscovery.ps1'
         & $discoveryPath -ProjectPath $ProjectPath -Format Json -OutputPath $OutputPath
+        exit 0
+    }
+    'remote-discovery-plan' {
+        if ([string]::IsNullOrWhiteSpace($Format)) {
+            $Format = 'Json'
+        }
+        if ($Format -ne 'Json') {
+            throw "remote-discovery-plan only supports -Format Json."
+        }
+        if ([string]::IsNullOrWhiteSpace($Platform)) {
+            throw "Missing required parameter for 'remote-discovery-plan': -Platform"
+        }
+
+        $remotePlanPath = Join-Path -Path $engineRoot -ChildPath 'src/ps1/New-RemoteToolDiscoveryPlan.ps1'
+        & $remotePlanPath -Platform $Platform -ProjectPath $ProjectPath -Format Json -OutputPath $OutputPath
+        exit 0
+    }
+    'resolve-remote-discovery' {
+        if ([string]::IsNullOrWhiteSpace($Format)) {
+            $Format = 'Json'
+        }
+        if ($Format -ne 'Json') {
+            throw "resolve-remote-discovery only supports -Format Json."
+        }
+        if ([string]::IsNullOrWhiteSpace($PlanPath)) {
+            throw "Missing required parameter for 'resolve-remote-discovery': -PlanPath"
+        }
+        if ([string]::IsNullOrWhiteSpace($ResponsePath)) {
+            throw "Missing required parameter for 'resolve-remote-discovery': -ResponsePath"
+        }
+
+        $remoteResolvePath = Join-Path -Path $engineRoot -ChildPath 'src/ps1/Resolve-RemoteToolDiscovery.ps1'
+        & $remoteResolvePath -PlanPath $PlanPath -ResponsePath $ResponsePath -Format Json -OutputPath $OutputPath
         exit 0
     }
 }

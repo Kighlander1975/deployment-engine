@@ -129,6 +129,41 @@ Das Statusmodell umfasst:
 - `probe-failed`
 - `unsupported`
 
+## Remote Tool Discovery
+
+Remote Tool Discovery ist von der lokalen Discovery getrennt. Die Engine erzeugt einen statischen Pruefplan, pausiert an einem Human Gate und verarbeitet danach ausschliesslich die vom Benutzer eingefuegte, markierte Konsolenausgabe.
+
+```text
+Remote Discovery Plan
+    -> Human Gate
+    -> Remote Output Validation
+    -> Remote Tool Inventory
+```
+
+Die Engine besitzt keinen SSH-Zugriff, startet keine Remote-Befehle, installiert nichts und trifft keine Adapterentscheidung. Unterstuetzt ist zunaechst nur die explizit angegebene Plattform `linux`.
+
+Remote-Probes stammen aus einer geschlossenen Allowlist. Jede Probe besitzt eine stabile Probe-ID, einen festen Anzeigebefehl, `executionMode = human`, `readOnly = true`, Validierungsregeln und eine blockierende Fortsetzungsregel. Projektmerkmale werden nur relativ zum vom Benutzer selbst gewaehlten Projektverzeichnis geprueft; `artisan` wird dabei nur als Datei erkannt und niemals ausgefuehrt.
+
+Der Plan enthaelt einen deterministischen `planFingerprint`, berechnet aus Schema-Version, Discovery-Typ, Plattform, geordneten Probe-IDs und Anzeigebefehlen. Zeitstempel, lokale Pfade, Benutzer- oder Maschinennamen gehen nicht in den Fingerprint ein. Ein Fingerprint-Mismatch wird hart abgelehnt.
+
+Das Human-Response-Format verwendet feste Marker:
+
+```text
+=== PLAN-FINGERPRINT ===
+<fingerprint>
+=== END PLAN-FINGERPRINT ===
+
+=== BEGIN remote.tool.php.location ===
+<vollstaendige Konsolenausgabe>
+=== END remote.tool.php.location ===
+```
+
+Unbekannte Probe-IDs, doppelte Marker, fehlende Endmarker, unmarkierter Zusatztext und Antworten ueber 1 MiB werden kontrolliert abgelehnt. Fehlende Pflichtprobes erzeugen kein vollstaendiges Inventory. Fehlende optionale Werkzeuge bleiben normale Tool-Ergebnisse mit `available = false` und `status = not-found`.
+
+Remote Tool Inventories verwenden denselben Tool-Kern wie lokale Inventories: `available`, `path`, `version`, `status` und `diagnostic`. Zusaetzlich kennzeichnen sie `environment = remote` und `discoveryMethod = human`. Probe-Fehler bleiben isolierte Tool-Ergebnisse; es gibt keine globale Fehlerliste ohne definierten Anwendungsfall.
+
+Remote-Ausgaben sollen keine Secrets oder personenbezogene Hostdaten enthalten. Nicht einzufuegen sind insbesondere Passwoerter, Tokens, Zugangsdaten, `.env`-Inhalte, Hostnamen, Benutzernamen, IP-Adressen, Umgebungsvariablen oder Verzeichnislisten.
+
 ## Human Gates
 
 Schritte mit Ausfuehrungsmodus `human` beschreiben Befehle, die der Benutzer selbst auf der Zielumgebung ausfuehren muss. Die Engine besitzt keinen SSH-Zugriff und fuehrt keine Remote-Befehle aus.
