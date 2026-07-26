@@ -1,6 +1,6 @@
 # Engine Pipeline
 
-Die Pipeline der Version `0.1` ist bewusst in Analyse, Planerzeugung und spaetere Ausfuehrung getrennt.
+Die Pipeline der Version `0.1` ist bewusst in Analyse, Planerzeugung, Capability-Aufloesung und spaetere Ausfuehrung getrennt.
 
 ## Project Detection
 
@@ -47,12 +47,49 @@ Jeder Planschritt enthaelt mindestens:
 
 Blocker aus dem Analyzer werden nicht als normale ausfuehrbare Schritte behandelt. Wenn Blocker vorhanden sind, wird der Plan als blockiert markiert und darf nicht fortgesetzt werden.
 
-Die Erzeugung konkreter technischer Befehle ist zentral gekapselt. Der Plan Builder arbeitet intern mit Command-Definitionen, nicht mit verstreuter String-Erzeugung. Das ist noch keine Capability Engine, bereitet aber vor, dass technische Werkzeuge spaeter austauschbar werden koennen.
+## Capability Layer
+
+Der Execution Plan Builder erzeugt fuer technische Anforderungen nur `capabilityId`-Werte. Er beschreibt damit, was benoetigt wird, nicht wie ein Werkzeug konkret aufgerufen wird.
+
+Der Capability Resolver liest den Execution Plan und den zentralen Capability-Katalog. Daraus erzeugt er einen neuen Resolved Execution Plan. Der uebergebene unresolved Plan wird dabei nicht veraendert.
+
+```text
+Execution Plan
+    -> Capability Resolver
+    -> Resolved Execution Plan
+```
+
+Der Resolver fuehrt keine Aktionen aus. Er trifft keine automatische Adapterwahl, entdeckt keine Tools und erzeugt keine dynamischen Shell-Kommandos.
+
+Unbekannte Capability IDs fuehren zu einem harten Fehler. Es gibt keine Fallbacks und keine impliziten Shell Commands.
+
+Der Capability-Katalog enthaelt pro Capability mindestens:
+
+- `capabilityId`,
+- `displayCommand`,
+- `executionMode`,
+- `riskLevel`,
+- `approvalRequired`.
+
+Optional enthaelt er Validierungsregeln, Fortsetzungsregeln und Backup-Anforderungen.
+
+Capability-Regeln bilden die minimale Sicherheitsbasis. Der Builder darf sie im Plan nur ergaenzen oder verschaerfen, aber nicht entfernen, abschwaechen oder still ueberschreiben.
+
+Die Merge-Regeln sind sicherheitsorientiert:
+
+- Boolesche Sicherheitsanforderungen werden per OR zusammengefuehrt.
+- Validation-Patterns werden capability-first vereinigt und case-insensitive dedupliziert.
+- Erlaubte Fortsetzungszustaende werden geschnitten; eine leere Schnittmenge ist ein harter Fehler.
+- Unterschiedliche Textanforderungen wie `requiredResponse` oder `requiredUserAction` werden kombiniert.
+- Widerspruechliche Execution Modes zwischen Builder und Capability werden abgelehnt.
+
+Sicherheitsattribute stammen grundsaetzlich aus dem Capability-Katalog. Der Builder darf sie im Plan nur verschaerfen, aber nicht herabsetzen. Wenn zum Beispiel der Builder `approvalRequired: true` verlangt und die Capability `false` enthaelt, bleibt das Ergebnis `true`.
 
 Dabei ist zwischen fachlichem Schritt und technischem Befehl zu unterscheiden:
 
 - Fachlicher Schritt: zum Beispiel `Remote Migration`, `Deployment Verification` oder `Runtime Maintenance`.
-- Technischer Befehl: zum Beispiel `php artisan migrate --force`, `php artisan about` oder `composer install --no-dev --optimize-autoloader`.
+- Capability: zum Beispiel `artisan.migrate`, `artisan.about` oder `composer.install.production`.
+- Technischer Anzeigebefehl im resolved Plan: zum Beispiel `php artisan migrate --force`, `php artisan about` oder `composer install --no-dev --optimize-autoloader`.
 
 Kuenftige technische Werkzeuge wie `7z`, `zip`, `unzip`, `tar`, `composer` oder `artisan` sollen austauschbar bleiben, ohne dass sich das fachliche Planmodell aendert.
 

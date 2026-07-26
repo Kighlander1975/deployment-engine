@@ -13,16 +13,20 @@ Die fachliche Trennung lautet:
 ```text
 Analyzer
     -> Execution Plan Builder
+    -> Capability Resolver
+    -> Resolved Execution Plan
     -> spaeterer Executor
 ```
 
-Der Analyzer ermittelt Aenderungen und Deployment-Entscheidungen. Der Execution Plan Builder uebersetzt dieses Ergebnis in stabile, maschinenlesbare Schritte. Ein spaeterer Executor darf den Plan nur schrittweise verarbeiten und muss an Human- und Review-Gates verbindlich pausieren.
+Der Analyzer ermittelt Aenderungen und Deployment-Entscheidungen. Der Execution Plan Builder uebersetzt dieses Ergebnis in stabile, maschinenlesbare Schritte mit `capabilityId`. Der Capability Resolver ist eine pure Transformation: Er veraendert den uebergebenen unresolved Plan nicht, sondern erzeugt ein neues Resolved Execution Plan-Objekt mit konkreten Anzeigeinformationen wie `displayCommand`, Ausfuehrungsmodus, Risikostufe, Freigabepflicht, Validierungsregeln und Fortsetzungsregeln. Ein spaeterer Executor darf den resolved Plan nur schrittweise verarbeiten und muss an Human- und Review-Gates verbindlich pausieren.
 
 Remote-Befehle werden nur angezeigt. Der Agent besitzt keinen SSH-Zugriff und soll keinen SSH-Zugriff erhalten. Befehle auf dem Zielsystem werden ausschliesslich vom Benutzer ausgefuehrt. Wenn ein Schritt Konsolenausgabe verlangt, reicht eine reine Bestaetigung wie `erledigt` oder `lief durch` nicht aus.
 
 Sicherheitsgrundsatz: Analyse ist standardmaessig rein lesend. Eine Ausgabe wird nur dann geschrieben, wenn ein lokaler `-OutputPath` explizit angegeben wird.
 
-Technische Befehle werden zentral ueber interne Command-Definitionen erzeugt. Damit bleibt der fachliche Schritt vom konkreten Werkzeug getrennt: `Remote Migration` ist der fachliche Schritt, `php artisan migrate --force` ist nur der aktuelle technische Befehl. Spaetere Werkzeuge wie `7z`, `zip`, `unzip`, `tar`, `composer` oder `artisan` sollen austauschbar bleiben, ohne das Planmodell umzubauen.
+Technische Befehle stammen aus dem zentralen Capability-Katalog. Damit bleibt der fachliche Schritt vom konkreten Werkzeug getrennt: `Remote Migration` ist der fachliche Schritt, `artisan.migrate` ist die Capability und `php artisan migrate --force` ist nur der aktuell aufgeloeste Anzeigebefehl. Spaetere Werkzeuge wie `7z`, `zip`, `unzip`, `tar`, `composer` oder `artisan` sollen austauschbar bleiben, ohne das Planmodell umzubauen.
+
+Capability-Regeln bilden die minimale Sicherheitsbasis. Builder-Regeln duerfen diese Basis nur ergaenzen oder verschaerfen: Validation-Patterns werden capability-first vereinigt, boolesche Sicherheitsanforderungen per OR zusammengefuehrt, erlaubte Fortsetzungszustaende geschnitten und widerspruechliche Execution Modes abgelehnt.
 
 ## Unterstuetzter Umfang in Version 0.1
 
@@ -33,7 +37,8 @@ Technische Befehle werden zentral ueber interne Command-Definitionen erzeugt. Da
 - `.env.example`-Schluessel vergleichen
 - Deployment-Entscheidungen und manuelle Freigabepunkte ableiten
 - Konsolenzusammenfassung und optionales Analyzer-JSON erzeugen
-- Analyzer-JSON in einen Execution Plan uebersetzen
+- Analyzer-JSON in einen Execution Plan mit Capability IDs uebersetzen
+- Capability IDs in einen Resolved Execution Plan aufloesen
 - Agent-, Human- und Review-Schritte unterscheiden
 - verbindliche Pausepunkte, Abhaengigkeiten und Validierungsanforderungen modellieren
 - Migrationen als High-Risk-Schritte mit Safety Review, `migrate:status` und ausdruecklicher Freigabe modellieren
@@ -67,6 +72,14 @@ JSON-Ausgabe:
     -Manifest C:\path\to\your-project\deployment.project.json `
     -Format Json `
     -OutputPath C:\path\to\your-project\.tmp\execution-plan.json
+```
+
+Die `plan`-Ausgabe ist bereits ein resolved Plan. Der Resolver ist auch separat als PowerShell-Komponente vorhanden:
+
+```powershell
+.\tools\deployment-engine\src\ps1\Resolve-DeploymentCapabilities.ps1 `
+    -PlanPath C:\path\to\execution-plan.json `
+    -Format Json
 ```
 
 Exit-Codes:

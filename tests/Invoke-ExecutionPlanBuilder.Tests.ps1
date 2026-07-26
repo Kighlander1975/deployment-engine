@@ -126,10 +126,17 @@ function Get-Step {
 
 $manifest = New-TestManifest
 $analysis = New-TestAnalysis
+$unresolvedPlan = New-UnresolvedExecutionPlan -Analysis $analysis -Manifest $manifest
+$unresolvedBeforeResolve = $unresolvedPlan | ConvertTo-Json -Depth 30
+$resolvedFromUnresolved = Resolve-DeploymentCapabilities -Plan $unresolvedPlan
+$unresolvedAfterResolve = $unresolvedPlan | ConvertTo-Json -Depth 30
 $plan = New-ExecutionPlan -Analysis $analysis -Manifest $manifest
 $planJsonA = $plan | ConvertTo-Json -Depth 30
 $planJsonB = (New-ExecutionPlan -Analysis $analysis -Manifest $manifest) | ConvertTo-Json -Depth 30
 
+Assert-Equal $unresolvedBeforeResolve $unresolvedAfterResolve 'Resolver must not mutate the unresolved input plan.'
+Assert-True (-not (Test-PropertyValue -Object $unresolvedPlan -Name 'resolved')) 'Unresolved input plan must not receive resolved flag.'
+Assert-True $resolvedFromUnresolved.resolved 'Resolved plan must receive resolved flag.'
 Assert-Equal $plan.blocked $false 'Empty blocker list must not block the plan.'
 Assert-Equal ($plan.phases -join ',') 'preconditions,environment-review,local-frontend-build,local-deployment-preparation,runtime-file-transfer,runtime-cleanup,remote-dependency-installation,remote-migrations,remote-runtime-maintenance,deployment-verification,deployment-marker-update' 'Phase order must be stable.'
 Assert-Equal $planJsonA $planJsonB 'Execution plan output must be deterministic.'
@@ -159,9 +166,15 @@ Assert-Equal (Get-Step -Plan $plan -Id 'environment.review').executionMode 'revi
 Assert-Equal (Get-Step -Plan $plan -Id 'environment.review').status 'waiting-for-review' 'Environment review gate must pause.'
 
 $migrationStep = Get-Step -Plan $plan -Id 'remote.migrations.execute'
+$unresolvedMigrationStep = Get-Step -Plan $unresolvedPlan -Id 'remote.migrations.execute'
+Assert-Equal $unresolvedMigrationStep.capabilityId 'artisan.migrate' 'Builder must emit migration capability id.'
+Assert-Equal $unresolvedMigrationStep.instructions.capabilityId 'artisan.migrate' 'Builder instructions must carry migration capability id.'
+Assert-True (-not (Test-PropertyValue -Object $unresolvedMigrationStep.instructions -Name 'command')) 'Unresolved builder output must not contain a shell command.'
+Assert-True (-not (Test-PropertyValue -Object $unresolvedMigrationStep.instructions -Name 'displayCommand')) 'Unresolved builder output must not contain a display command.'
 Assert-Equal $migrationStep.executionMode 'human' 'Migration step must be a human gate.'
 Assert-Equal $migrationStep.status 'blocked' 'Migration step must remain blocked while earlier review gates are open.'
 Assert-Equal $migrationStep.instructions.command 'php artisan migrate --force' 'Migration command must be complete.'
+Assert-Equal $migrationStep.instructions.displayCommand 'php artisan migrate --force' 'Resolver must add display command.'
 Assert-Equal $migrationStep.instructions.workingDirectory '/var/www/demo/laravel_app' 'Migration working directory must be displayed.'
 Assert-Equal $migrationStep.riskLevel 'high' 'Migration execution must be marked high risk.'
 Assert-True $migrationStep.approvalRequired 'Migration execution must require approval.'
@@ -178,6 +191,7 @@ Assert-True $migrationSafetyStep.approvalRequired 'Migration safety review must 
 Assert-True $migrationSafetyStep.instructions.backupRequired 'Migration safety review must require backup confirmation.'
 Assert-True (@($migrationSafetyStep.instructions.affectedMigrationFiles) -contains 'laravel_app/database/migrations/2026_01_01_000000_demo.php') 'Migration safety review must list affected migration files.'
 Assert-Equal $migrationStatusStep.instructions.command 'php artisan migrate:status' 'Migration status command must be present before migrate.'
+Assert-Equal $migrationStatusStep.capabilityId 'artisan.migrate.status' 'Migration status must use its own capability.'
 Assert-Equal $migrationStatusStep.riskLevel 'high' 'Migration status step must be high risk.'
 Assert-True $migrationStatusStep.approvalRequired 'Migration status step must require approval.'
 Assert-Equal $waitingMigrationStep.status 'blocked' 'Migration execution must remain blocked by safety review and status check.'
@@ -200,12 +214,116 @@ Assert-Equal (Test-ManualStepOutput -Step $waitingMigrationStep -Output 'erledig
 
 foreach ($forbiddenCommand in @('php artisan migrate:fresh', 'php artisan migrate:refresh', 'php artisan migrate:reset', 'php artisan migrate:rollback', 'php artisan db:wipe')) {
     try {
-        [void] (New-HumanCommandInstructions -Manifest $manifest -Command $forbiddenCommand -Purpose 'Forbidden' -ExpectedOutcome 'Forbidden')
+        Assert-DeploymentCommandAllowed -Command $forbiddenCommand
         $script:failures.Add("Forbidden Artisan command must be rejected: $forbiddenCommand")
     } catch {
         Assert-True ($_.Exception.Message -match 'Forbidden deployment command rejected') "Forbidden command must produce a controlled error: $forbiddenCommand"
     }
 }
+
+try {
+    $badPlan = New-UnresolvedExecutionPlan -Analysis $analysis -Manifest $manifest
+    $badStep = Get-Step -Plan $badPlan -Id 'remote.migrations.execute'
+    $badStep.capabilityId = 'unknown.capability'
+    $badStep.instructions.capabilityId = 'unknown.capability'
+    [void] (Resolve-DeploymentCapabilities -Plan $badPlan)
+    $script:failures.Add('Unknown capability id must be rejected.')
+} catch {
+    Assert-True ($_.Exception.Message -match 'Unknown deployment capability') 'Unknown capability must produce a controlled error.'
+}
+
+$resolvedStatusStep = Get-Step -Plan $plan -Id 'remote.migrations.status'
+Assert-Equal $resolvedStatusStep.executionMode 'human' 'Resolver must apply capability execution mode.'
+Assert-Equal $resolvedStatusStep.riskLevel 'high' 'Resolver must apply capability risk level.'
+Assert-True $resolvedStatusStep.approvalRequired 'Resolver must apply capability approval flag.'
+Assert-True $resolvedStatusStep.validation.requiresOutput 'Resolver must apply capability validation rules.'
+
+$backupCapabilityTruePlan = New-UnresolvedExecutionPlan -Analysis $analysis -Manifest $manifest
+$backupCapabilityTrueStep = Get-Step -Plan $backupCapabilityTruePlan -Id 'remote.migrations.status'
+Add-Member -InputObject $backupCapabilityTrueStep.instructions -MemberType NoteProperty -Name 'requiresBackupConfirmation' -Value $false
+$resolvedBackupCapabilityTruePlan = Resolve-DeploymentCapabilities -Plan $backupCapabilityTruePlan
+$resolvedBackupCapabilityTrueStep = Get-Step -Plan $resolvedBackupCapabilityTruePlan -Id 'remote.migrations.status'
+Assert-True $resolvedBackupCapabilityTrueStep.instructions.requiresBackupConfirmation 'Capability backup requirement true must not be lowered by builder false.'
+
+$backupBuilderTruePlan = New-UnresolvedExecutionPlan -Analysis $analysis -Manifest $manifest
+$backupBuilderTrueStep = Get-Step -Plan $backupBuilderTruePlan -Id 'deployment.verification.remote-about'
+Add-Member -InputObject $backupBuilderTrueStep.instructions -MemberType NoteProperty -Name 'requiresBackupConfirmation' -Value $true
+$resolvedBackupBuilderTruePlan = Resolve-DeploymentCapabilities -Plan $backupBuilderTruePlan
+$resolvedBackupBuilderTrueStep = Get-Step -Plan $resolvedBackupBuilderTruePlan -Id 'deployment.verification.remote-about'
+Assert-True $resolvedBackupBuilderTrueStep.instructions.requiresBackupConfirmation 'Builder backup requirement true must be preserved when capability is false.'
+
+$mergePlan = New-UnresolvedExecutionPlan -Analysis $analysis -Manifest $manifest
+$mergeStep = Get-Step -Plan $mergePlan -Id 'remote.migrations.execute'
+$mergeStep.validation = [pscustomobject]@{
+    requiresOutput = $false
+    requiresExitCode = $true
+    successPatterns = @('Migrated:', 'Custom success')
+    failurePatterns = @('SQLSTATE', 'error')
+    ambiguousWithoutSuccessMatch = $false
+    verificationCommandRequired = $true
+    requiredResponse = 'Exit-Code und betroffene Migrationen'
+}
+$mergeStep.continuation = [pscustomobject]@{
+    allowedStatusesForDependents = @('completed')
+    blocksAutomaticContinuation = $false
+    requiredUserAction = 'Zusatzfreigabe pruefen'
+}
+$resolvedMergePlan = Resolve-DeploymentCapabilities -Plan $mergePlan
+$resolvedMergeStep = Get-Step -Plan $resolvedMergePlan -Id 'remote.migrations.execute'
+Assert-True $resolvedMergeStep.validation.requiresOutput 'Validation boolean merge must preserve capability requiresOutput.'
+Assert-True $resolvedMergeStep.validation.requiresExitCode 'Validation boolean merge must include stricter builder requiresExitCode.'
+Assert-True $resolvedMergeStep.validation.verificationCommandRequired 'Validation boolean merge must include stricter builder verification command requirement.'
+Assert-Equal ($resolvedMergeStep.validation.failurePatterns -join ',') 'ERROR,Exception,Migration failed,SQLSTATE' 'Failure patterns must merge capability-first and deduplicate case-insensitively.'
+Assert-Equal ($resolvedMergeStep.validation.successPatterns -join ',') 'Migrated:,Nothing to migrate,Custom success' 'Success patterns must merge capability-first and deduplicate.'
+Assert-True ($resolvedMergeStep.validation.requiredResponse -match 'Vollstaendige relevante Konsolenausgabe') 'Required response must retain capability response.'
+Assert-True ($resolvedMergeStep.validation.requiredResponse -match 'Exit-Code und betroffene Migrationen') 'Required response must include builder response.'
+Assert-Equal ($resolvedMergeStep.continuation.allowedStatusesForDependents -join ',') 'completed' 'Continuation statuses must use intersection.'
+Assert-True $resolvedMergeStep.continuation.blocksAutomaticContinuation 'Continuation boolean merge must preserve capability blocking.'
+Assert-True ($resolvedMergeStep.continuation.requiredUserAction -match 'Der Prozess wartet') 'Required user action must retain capability action.'
+Assert-True ($resolvedMergeStep.continuation.requiredUserAction -match 'Zusatzfreigabe pruefen') 'Required user action must include builder action.'
+
+try {
+    $badContinuationPlan = New-UnresolvedExecutionPlan -Analysis $analysis -Manifest $manifest
+    $badContinuationStep = Get-Step -Plan $badContinuationPlan -Id 'remote.migrations.execute'
+    $badContinuationStep.continuation = [pscustomobject]@{
+        allowedStatusesForDependents = @('failed')
+        blocksAutomaticContinuation = $false
+        requiredUserAction = ''
+    }
+    [void] (Resolve-DeploymentCapabilities -Plan $badContinuationPlan)
+    $script:failures.Add('Empty continuation status intersection must be rejected.')
+} catch {
+    Assert-True ($_.Exception.Message -match 'no compatible allowed statuses') 'Empty continuation status intersection must produce a controlled error.'
+}
+
+try {
+    $modeConflictPlan = New-UnresolvedExecutionPlan -Analysis $analysis -Manifest $manifest
+    $modeConflictStep = Get-Step -Plan $modeConflictPlan -Id 'remote.migrations.execute'
+    $modeConflictStep.executionMode = 'agent'
+    [void] (Resolve-DeploymentCapabilities -Plan $modeConflictPlan)
+    $script:failures.Add('Execution mode conflict must be rejected.')
+} catch {
+    Assert-True ($_.Exception.Message -match 'Execution mode conflict') 'Execution mode conflict must produce a controlled error.'
+}
+
+try {
+    $idConflictPlan = New-UnresolvedExecutionPlan -Analysis $analysis -Manifest $manifest
+    $idConflictStep = Get-Step -Plan $idConflictPlan -Id 'remote.migrations.execute'
+    $idConflictStep.instructions.capabilityId = 'artisan.about'
+    [void] (Resolve-DeploymentCapabilities -Plan $idConflictPlan)
+    $script:failures.Add('Capability id mismatch must be rejected.')
+} catch {
+    Assert-True ($_.Exception.Message -match 'Capability id mismatch') 'Capability id mismatch must produce a controlled error.'
+}
+
+$weakenedPlan = New-UnresolvedExecutionPlan -Analysis $analysis -Manifest $manifest
+$weakenedStep = Get-Step -Plan $weakenedPlan -Id 'remote.migrations.status'
+$weakenedStep.riskLevel = 'low'
+$weakenedStep.approvalRequired = $false
+$resolvedWeakenedPlan = Resolve-DeploymentCapabilities -Plan $weakenedPlan
+$resolvedWeakenedStep = Get-Step -Plan $resolvedWeakenedPlan -Id 'remote.migrations.status'
+Assert-Equal $resolvedWeakenedStep.riskLevel 'high' 'Resolver must not let builder lower capability risk level.'
+Assert-True $resolvedWeakenedStep.approvalRequired 'Resolver must not let builder lower capability approval requirement.'
 
 $protectedPlan = New-ExecutionPlan -Analysis (New-TestAnalysis -ProtectedFileReviewRequired $true) -Manifest $manifest
 $protectedStep = Get-Step -Plan $protectedPlan -Id 'environment.protected-files-review'

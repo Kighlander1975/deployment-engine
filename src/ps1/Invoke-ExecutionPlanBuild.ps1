@@ -18,6 +18,8 @@ $ErrorActionPreference = 'Stop'
 $executionPlanSchemaVersion = '0.1'
 $supportedAnalysisVersions = @('0.1')
 
+. (Join-Path -Path $PSScriptRoot -ChildPath 'Resolve-DeploymentCapabilities.ps1')
+
 function Resolve-LocalPath {
     param(
         [Parameter(Mandatory = $true)]
@@ -214,6 +216,7 @@ function New-ExecutionPlanStep {
         [bool] $Destructive = $false,
         [ValidateSet('low', 'normal', 'high')]
         [string] $RiskLevel = 'normal',
+        [string] $CapabilityId = '',
         [string[]] $DependsOn = @(),
         [object] $Instructions,
         [object] $Validation,
@@ -241,6 +244,7 @@ function New-ExecutionPlanStep {
         approvalRequired = $ApprovalRequired
         destructive = $Destructive
         riskLevel = $RiskLevel
+        capabilityId = $CapabilityId
         dependsOn = @($DependsOn)
         instructions = $Instructions
         validation = $Validation
@@ -248,96 +252,15 @@ function New-ExecutionPlanStep {
     }
 }
 
-function Get-ForbiddenDeploymentCommands {
-    return @(
-        'php artisan migrate:fresh',
-        'php artisan migrate:refresh',
-        'php artisan migrate:reset',
-        'php artisan migrate:rollback',
-        'php artisan db:wipe'
-    )
-}
-
-function Assert-DeploymentCommandAllowed {
-    param([Parameter(Mandatory = $true)][string] $Command)
-
-    $normalizedCommand = ($Command -replace '\s+', ' ').Trim().ToLowerInvariant()
-    foreach ($forbiddenCommand in Get-ForbiddenDeploymentCommands) {
-        if ($normalizedCommand -eq $forbiddenCommand -or $normalizedCommand.StartsWith("$forbiddenCommand ")) {
-            throw "Forbidden deployment command rejected: '$Command'. This command must never be proposed by the Execution Plan Builder."
-        }
-    }
-}
-
-function Get-DeploymentCommandDefinition {
-    param([Parameter(Mandatory = $true)][string] $Id)
-
-    $definitions = @{
-        'composer.install-production' = [pscustomobject]@{
-            command = 'composer install --no-dev --optimize-autoloader'
-            purpose = 'PHP-Abhaengigkeiten auf der Zielumgebung installieren.'
-            expectedOutcome = 'Composer installiert die benoetigten produktiven Abhaengigkeiten ohne Fehler.'
-            requiredResponse = 'Vollstaendige relevante Composer-Konsolenausgabe'
-        }
-        'artisan.migrate-status' = [pscustomobject]@{
-            command = 'php artisan migrate:status'
-            purpose = 'Pruefen, welche Migrationen auf der Zielumgebung offen oder bereits ausgefuehrt sind.'
-            expectedOutcome = 'Laravel gibt den Status der Migrationen ohne Fehler aus.'
-            requiredResponse = 'Vollstaendige relevante Konsolenausgabe von migrate:status'
-        }
-        'artisan.migrate-force' = [pscustomobject]@{
-            command = 'php artisan migrate --force'
-            purpose = 'Ausfuehren der noch offenen Datenbankmigrationen.'
-            expectedOutcome = 'Alle offenen Migrationen werden erfolgreich abgeschlossen.'
-            requiredResponse = 'Vollstaendige relevante Konsolenausgabe'
-        }
-        'artisan.optimize-clear' = [pscustomobject]@{
-            command = 'php artisan optimize:clear'
-            purpose = 'Laravel Runtime-Caches nach dem Deployment kontrolliert leeren.'
-            expectedOutcome = 'Laravel meldet erfolgreich geleerte Caches.'
-            requiredResponse = 'Vollstaendige relevante Konsolenausgabe'
-        }
-        'artisan.about' = [pscustomobject]@{
-            command = 'php artisan about'
-            purpose = 'Kontrolle, dass die Laravel-Anwendung auf der Zielumgebung antwortet.'
-            expectedOutcome = 'Der Befehl gibt Anwendungs- und Umgebungsinformationen ohne Fehler aus.'
-            requiredResponse = 'Vollstaendige relevante Verifikationsausgabe'
-        }
-    }
-
-    if (-not $definitions.ContainsKey($Id)) {
-        throw "Unknown deployment command definition: '$Id'."
-    }
-
-    $definition = $definitions[$Id]
-    Assert-DeploymentCommandAllowed -Command $definition.command
-    return $definition
-}
-
-function New-HumanCommandInstructions {
+function New-CapabilityInstructions {
     param(
         [Parameter(Mandatory = $true)][object] $Manifest,
-        [string] $CommandId,
-        [string] $Command,
+        [Parameter(Mandatory = $true)][string] $CapabilityId,
         [string] $Purpose,
         [string] $ExpectedOutcome,
         [string] $WorkingDirectory,
         [string] $RequiredResponse = 'Vollstaendige relevante Konsolenausgabe'
     )
-
-    if (-not [string]::IsNullOrWhiteSpace($CommandId)) {
-        $definition = Get-DeploymentCommandDefinition -Id $CommandId
-        $Command = $definition.command
-        $Purpose = $definition.purpose
-        $ExpectedOutcome = $definition.expectedOutcome
-        $RequiredResponse = $definition.requiredResponse
-    }
-
-    if ([string]::IsNullOrWhiteSpace($Command) -or [string]::IsNullOrWhiteSpace($Purpose) -or [string]::IsNullOrWhiteSpace($ExpectedOutcome)) {
-        throw "Human command instructions require a command definition or explicit command, purpose and expected outcome."
-    }
-
-    Assert-DeploymentCommandAllowed -Command $Command
 
     if ([string]::IsNullOrWhiteSpace($WorkingDirectory)) {
         $WorkingDirectory = Get-ApplicationRemoteDirectory -Manifest $Manifest
@@ -347,8 +270,7 @@ function New-HumanCommandInstructions {
         environment = [string] $Manifest.deployment.environment
         channel = 'ssh'
         workingDirectory = $WorkingDirectory
-        commandId = $CommandId
-        command = $Command
+        capabilityId = $CapabilityId
         purpose = $Purpose
         expectedOutcome = $ExpectedOutcome
         requiredResponse = $RequiredResponse
@@ -416,13 +338,13 @@ function Get-MigrationPaths {
 function Test-CommandReady {
     param([Parameter(Mandatory = $true)][object] $Instructions)
 
-    @('environment', 'channel', 'workingDirectory', 'command', 'purpose', 'expectedOutcome', 'requiredResponse') | ForEach-Object {
+    @('environment', 'channel', 'workingDirectory', 'capabilityId', 'purpose', 'expectedOutcome', 'requiredResponse') | ForEach-Object {
         if (-not (Test-PropertyValue -Object $Instructions -Name $_) -or [string]::IsNullOrWhiteSpace([string] $Instructions.$_)) {
             return $false
         }
     }
 
-    $text = @($Instructions.environment, $Instructions.channel, $Instructions.workingDirectory, $Instructions.command) -join ' '
+    $text = @($Instructions.environment, $Instructions.channel, $Instructions.workingDirectory, $Instructions.capabilityId) -join ' '
     return -not ($text -match '<[^>]+>' -or $text -match '\{\{[^}]+\}\}' -or $text -match '\$\{[^}]+\}')
 }
 
@@ -691,7 +613,7 @@ function BuildComposerPlan {
     param([Parameter(Mandatory = $true)][object] $Context)
 
     if ($Context.decisions.composerInstallRequired) {
-        $instructions = New-HumanCommandInstructions -Manifest $Context.manifest -CommandId 'composer.install-production'
+        $instructions = New-CapabilityInstructions -Manifest $Context.manifest -CapabilityId 'composer.install.production' -Purpose 'PHP-Abhaengigkeiten auf der Zielumgebung installieren.' -ExpectedOutcome 'Composer installiert die benoetigten produktiven Abhaengigkeiten ohne Fehler.'
         $status = if (Test-CommandReady -Instructions $instructions) { Get-BlockedOrWaitingStatus -BlockingDependencies $Context.gateIds.ToArray() -WaitingStatus 'waiting-for-human' } else { 'blocked' }
         Add-ExecutionPlanStep -Context $Context -BlocksFollowingSteps $true -Step (New-ExecutionPlanStep `
             -Id 'remote.dependencies.composer-install' `
@@ -701,9 +623,9 @@ function BuildComposerPlan {
             -Status $status `
             -Reason 'Composer-Abhaengigkeiten haben sich laut Analyzer geaendert.' `
             -ApprovalRequired $true `
+            -CapabilityId 'composer.install.production' `
             -DependsOn @($Context.gateIds) `
             -Instructions $instructions `
-            -Validation (New-ValidationRule -RequiresOutput $true -SuccessPatterns @('Generating optimized autoload files', 'Nothing to install, update or remove') -FailurePatterns @('ERROR', 'Exception', 'failed', 'Could not', 'Script .* returned with error code') -AmbiguousWithoutSuccessMatch $true -RequiredResponse 'Vollstaendige relevante Composer-Konsolenausgabe') `
             -Continuation (New-ContinuationRule -blocksAutomaticContinuation $true -requiredUserAction 'Der Prozess wartet auf Konsolenausgabe und erfolgreiche Bewertung.'))
     } else {
         Add-ExecutionPlanStep -Context $Context -Step (New-ExecutionPlanStep -Id 'remote.dependencies.composer-install' -Phase 'remote-dependency-installation' -Title 'Remote Composer-Installation ausfuehren lassen' -ExecutionMode 'human' -Required $false -Status 'skipped' -Reason 'Der Analyzer hat keinen Composer-Installationsbedarf erkannt.')
@@ -738,7 +660,7 @@ function BuildMigrationPlan {
         -Validation (New-ValidationRule -RequiredResponse 'Explizite High-Risk-Freigabe mit Backup-Bestaetigung.') `
         -Continuation (New-ContinuationRule -blocksAutomaticContinuation $true -requiredUserAction 'Der Prozess wartet auf Migrationsfreigabe und Backup-Bestaetigung.'))
 
-    $statusInstructions = New-HumanCommandInstructions -Manifest $Context.manifest -CommandId 'artisan.migrate-status'
+    $statusInstructions = New-CapabilityInstructions -Manifest $Context.manifest -CapabilityId 'artisan.migrate.status' -Purpose 'Pruefen, welche Migrationen auf der Zielumgebung offen oder bereits ausgefuehrt sind.' -ExpectedOutcome 'Laravel gibt den Status der Migrationen ohne Fehler aus.' -RequiredResponse 'Vollstaendige relevante Konsolenausgabe von migrate:status'
     $statusStatus = if (Test-CommandReady -Instructions $statusInstructions) { Get-BlockedOrWaitingStatus -BlockingDependencies $Context.gateIds.ToArray() -WaitingStatus 'waiting-for-human' } else { 'blocked' }
     Add-ExecutionPlanStep -Context $Context -BlocksFollowingSteps $true -Step (New-ExecutionPlanStep `
         -Id 'remote.migrations.status' `
@@ -749,12 +671,12 @@ function BuildMigrationPlan {
         -Reason 'Vor der Ausfuehrung muss der aktuelle Migrationsstatus der Zielumgebung sichtbar sein.' `
         -ApprovalRequired $true `
         -RiskLevel 'high' `
+        -CapabilityId 'artisan.migrate.status' `
         -DependsOn @($Context.gateIds) `
         -Instructions $statusInstructions `
-        -Validation (New-ValidationRule -RequiresOutput $true -SuccessPatterns @('Migration', 'Ran?') -FailurePatterns @('ERROR', 'Exception', 'SQLSTATE', 'failed') -AmbiguousWithoutSuccessMatch $true -RequiredResponse 'Vollstaendige relevante Konsolenausgabe von migrate:status') `
         -Continuation (New-ContinuationRule -blocksAutomaticContinuation $true -requiredUserAction 'Der Prozess wartet auf migrate:status-Ausgabe und Bewertung.'))
 
-    $instructions = New-HumanCommandInstructions -Manifest $Context.manifest -CommandId 'artisan.migrate-force'
+    $instructions = New-CapabilityInstructions -Manifest $Context.manifest -CapabilityId 'artisan.migrate' -Purpose 'Ausfuehren der noch offenen Datenbankmigrationen.' -ExpectedOutcome 'Alle offenen Migrationen werden erfolgreich abgeschlossen.'
     $executeStatus = if (Test-CommandReady -Instructions $instructions) { Get-BlockedOrWaitingStatus -BlockingDependencies $Context.gateIds.ToArray() -WaitingStatus 'waiting-for-human' } else { 'blocked' }
     Add-ExecutionPlanStep -Context $Context -BlocksFollowingSteps $true -Step (New-ExecutionPlanStep `
         -Id 'remote.migrations.execute' `
@@ -765,9 +687,9 @@ function BuildMigrationPlan {
         -Reason 'Seit der Deployment-Baseline wurden neue oder geaenderte Migrationen erkannt.' `
         -ApprovalRequired $true `
         -RiskLevel 'high' `
+        -CapabilityId 'artisan.migrate' `
         -DependsOn @($Context.gateIds) `
         -Instructions $instructions `
-        -Validation (New-ValidationRule -RequiresOutput $true -SuccessPatterns @('Migrated:', 'Nothing to migrate') -FailurePatterns @('ERROR', 'Exception', 'Migration failed', 'SQLSTATE') -AmbiguousWithoutSuccessMatch $true -RequiredResponse 'Vollstaendige relevante Konsolenausgabe') `
         -Continuation (New-ContinuationRule -blocksAutomaticContinuation $true -requiredUserAction 'Der Prozess wartet auf Konsolenausgabe und erfolgreiche Bewertung.'))
 }
 
@@ -776,7 +698,7 @@ function BuildMaintenancePlan {
 
     $maintenanceRequired = $Context.decisions.runtimeDeploymentRequired -and -not $Context.decisions.documentationOnly
     if ($maintenanceRequired) {
-        $instructions = New-HumanCommandInstructions -Manifest $Context.manifest -CommandId 'artisan.optimize-clear'
+        $instructions = New-CapabilityInstructions -Manifest $Context.manifest -CapabilityId 'artisan.optimize.clear' -Purpose 'Laravel Runtime-Caches nach dem Deployment kontrolliert leeren.' -ExpectedOutcome 'Laravel meldet erfolgreich geleerte Caches.'
         $status = if (Test-CommandReady -Instructions $instructions) { Get-BlockedOrWaitingStatus -BlockingDependencies $Context.gateIds.ToArray() -WaitingStatus 'waiting-for-human' } else { 'blocked' }
         Add-ExecutionPlanStep -Context $Context -BlocksFollowingSteps $true -Step (New-ExecutionPlanStep `
             -Id 'remote.runtime.cache-clear' `
@@ -786,9 +708,9 @@ function BuildMaintenancePlan {
             -Status $status `
             -Reason 'Nach Runtime-Aenderungen ist eine serverseitige Runtime-Wartung einzuplanen.' `
             -ApprovalRequired $true `
+            -CapabilityId 'artisan.optimize.clear' `
             -DependsOn @($Context.gateIds) `
             -Instructions $instructions `
-            -Validation (New-ValidationRule -RequiresOutput $true -SuccessPatterns @('cleared', 'Caches cleared successfully') -FailurePatterns @('ERROR', 'Exception', 'failed', 'Permission denied') -AmbiguousWithoutSuccessMatch $true -RequiredResponse 'Vollstaendige relevante Konsolenausgabe') `
             -Continuation (New-ContinuationRule -blocksAutomaticContinuation $true -requiredUserAction 'Der Prozess wartet auf Konsolenausgabe und erfolgreiche Bewertung.'))
     } else {
         Add-ExecutionPlanStep -Context $Context -Step (New-ExecutionPlanStep -Id 'remote.runtime.cache-clear' -Phase 'remote-runtime-maintenance' -Title 'Remote Runtime-Caches leeren lassen' -ExecutionMode 'human' -Required $false -Status 'skipped' -Reason 'Keine Runtime-Wartung erforderlich.')
@@ -799,7 +721,7 @@ function BuildVerificationPlan {
     param([Parameter(Mandatory = $true)][object] $Context)
 
     if ($Context.decisions.runtimeDeploymentRequired -and -not $Context.decisions.documentationOnly) {
-        $instructions = New-HumanCommandInstructions -Manifest $Context.manifest -CommandId 'artisan.about'
+        $instructions = New-CapabilityInstructions -Manifest $Context.manifest -CapabilityId 'artisan.about' -Purpose 'Kontrolle, dass die Laravel-Anwendung auf der Zielumgebung antwortet.' -ExpectedOutcome 'Der Befehl gibt Anwendungs- und Umgebungsinformationen ohne Fehler aus.' -RequiredResponse 'Vollstaendige relevante Verifikationsausgabe'
         $status = if (Test-CommandReady -Instructions $instructions) { Get-BlockedOrWaitingStatus -BlockingDependencies $Context.gateIds.ToArray() -WaitingStatus 'waiting-for-human' } else { 'blocked' }
         Add-ExecutionPlanStep -Context $Context -BlocksFollowingSteps $true -Step (New-ExecutionPlanStep `
             -Id 'deployment.verification.remote-about' `
@@ -809,9 +731,9 @@ function BuildVerificationPlan {
             -Status $status `
             -Reason 'Vor dem Marker-Update muss das Deployment serverseitig verifiziert werden.' `
             -ApprovalRequired $true `
+            -CapabilityId 'artisan.about' `
             -DependsOn @($Context.gateIds) `
             -Instructions $instructions `
-            -Validation (New-ValidationRule -RequiresOutput $true -SuccessPatterns @('Environment', 'Laravel') -FailurePatterns @('ERROR', 'Exception', 'failed', 'SQLSTATE') -AmbiguousWithoutSuccessMatch $true -VerificationCommandRequired $true -RequiredResponse 'Vollstaendige relevante Verifikationsausgabe') `
             -Continuation (New-ContinuationRule -blocksAutomaticContinuation $true -requiredUserAction 'Der Prozess wartet auf Verifikationsausgabe und erfolgreiche Bewertung.'))
     } else {
         Add-ExecutionPlanStep -Context $Context -Step (New-ExecutionPlanStep -Id 'deployment.verification.remote-about' -Phase 'deployment-verification' -Title 'Deployment auf Zielumgebung verifizieren lassen' -ExecutionMode 'human' -Required $false -Status 'skipped' -Reason 'Keine serverseitige Deployment-Verifikation erforderlich.')
@@ -889,7 +811,7 @@ function ConvertTo-ExecutionPlanResult {
     return [pscustomobject] $result
 }
 
-function New-ExecutionPlan {
+function New-UnresolvedExecutionPlan {
     param(
         [Parameter(Mandatory = $true)][object] $Analysis,
         [Parameter(Mandatory = $true)][object] $Manifest
@@ -912,6 +834,16 @@ function New-ExecutionPlan {
     BuildMarkerPlan -Context $context
 
     return ConvertTo-ExecutionPlanResult -Context $context
+}
+
+function New-ExecutionPlan {
+    param(
+        [Parameter(Mandatory = $true)][object] $Analysis,
+        [Parameter(Mandatory = $true)][object] $Manifest
+    )
+
+    $plan = New-UnresolvedExecutionPlan -Analysis $Analysis -Manifest $Manifest
+    return Resolve-DeploymentCapabilities -Plan $plan
 }
 
 function Test-ManualStepOutput {
