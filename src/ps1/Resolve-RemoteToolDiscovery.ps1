@@ -9,7 +9,15 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+$script:ResolveRemoteToolDiscoveryPlanPath = $PlanPath
+$script:ResolveRemoteToolDiscoveryResponsePath = $ResponsePath
+$script:ResolveRemoteToolDiscoveryOutputPath = $OutputPath
+$script:ResolveRemoteToolDiscoveryFormat = $Format
 . (Join-Path -Path $PSScriptRoot -ChildPath 'New-RemoteToolDiscoveryPlan.ps1')
+$PlanPath = $script:ResolveRemoteToolDiscoveryPlanPath
+$ResponsePath = $script:ResolveRemoteToolDiscoveryResponsePath
+$OutputPath = $script:ResolveRemoteToolDiscoveryOutputPath
+$Format = $script:ResolveRemoteToolDiscoveryFormat
 
 $script:RemoteDiscoveryMaxResponseBytes = 1048576
 $script:RemoteDiscoveryMaxProbeBytes = 65536

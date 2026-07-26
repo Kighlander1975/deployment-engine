@@ -19,6 +19,8 @@ Analyzer
     -> Tool Inventory
     -> Remote Discovery Plan
     -> Remote Tool Inventory
+    -> Tool Inventory Assessment
+    -> Assessed Tool Inventory
     -> spaeterer Executor
 ```
 
@@ -36,6 +38,8 @@ Tool Discovery ist eine neutrale, read-only Inventur lokaler Werkzeuge und optio
 
 Remote Discovery erzeugt dagegen nur einen sicheren Human-Gate-Pruefplan. Die Engine besitzt keinen SSH-Zugriff und fuehrt keine Serverbefehle aus; der Benutzer fuehrt ausschliesslich die angezeigten statischen Pruefkommandos selbst aus und gibt die vollstaendige markierte Konsolenausgabe zur Validierung zurueck.
 
+Tool Inventory Assessment fuehrt vorhandene Local- und Remote-Inventare analytisch zusammen. Eine Quelle darf fehlen; dann bleibt die vorhandene Quelle sichtbar, das Gesamtassessment wird `incomplete` und Toolbewertungen mit unzureichender Datenbasis werden `unknown`.
+
 ## Unterstuetzter Umfang in Version 0.1
 
 - Projektmanifest lesen und validieren
@@ -49,6 +53,7 @@ Remote Discovery erzeugt dagegen nur einen sicheren Human-Gate-Pruefplan. Die En
 - Capability IDs in einen Resolved Execution Plan aufloesen
 - lokale Tool Discovery fuer `php`, `composer`, `docker`, `7z`, `zip`, `tar` und projektbezogen `artisan`
 - Remote Tool Discovery als Human Gate mit statischer Probe-Allowlist und markierter Konsolenausgabe
+- Tool Inventory Assessment ohne Adapter Selection oder Versionskompatibilitaetsentscheidung
 - Agent-, Human- und Review-Schritte unterscheiden
 - verbindliche Pausepunkte, Abhaengigkeiten und Validierungsanforderungen modellieren
 - Migrationen als High-Risk-Schritte mit Safety Review, `migrate:status` und ausdruecklicher Freigabe modellieren
@@ -154,8 +159,18 @@ Nach der manuellen Ausfuehrung wird die vollstaendige Ausgabe im Markerformat au
 
 Eine blosse Bestaetigung wie `erledigt` reicht nicht aus. Unbekannte, doppelte oder unvollstaendige Marker werden kontrolliert abgelehnt beziehungsweise als unvollstaendig bewertet. Die Ausgabe wird nur als Text verarbeitet und in ein Remote Tool Inventory ueberfuehrt. Es findet keine Adapter Selection, Installation oder Deployment-Ausfuehrung statt. Keine Passwoerter, Tokens, Zugangsdaten oder `.env`-Inhalte einfuegen.
 
+## Tool Inventories bewerten
+
+```powershell
+.\tools\deployment-engine\bin\deployment-engine.ps1 assess-tool-inventories `
+    -LocalInventoryPath C:\path\to\your-project\.tmp\local-tool-inventory.json `
+    -RemoteInventoryPath C:\path\to\your-project\.tmp\remote-tool-inventory.json `
+    -OutputPath C:\path\to\your-project\.tmp\assessed-tool-inventory.json
+```
+
+Mindestens ein Inventory-Pfad muss angegeben werden. Local und Remote bleiben getrennte Quellen; Pfade und Versionen werden nicht zusammengefuehrt. Fehlt eine Quelle, entsteht `status = incomplete`. `available-local-only` und `available-remote-only` bedeuten, dass beide Seiten tatsaechlich geprueft wurden. Unterschiedliche Versionen werden nur angezeigt und nicht als kompatibel oder inkompatibel bewertet.
+
 Exit-Codes:
 
-- `0`: Plan wurde erzeugt und ist nicht durch Analyzer-Blocker blockiert.
-- `1`: ungueltige Eingaben oder technische Fehler.
-- `2`: Plan wurde erzeugt, enthaelt aber Blocker und darf nicht fortgesetzt werden.
+- `0`: Der angeforderte CLI-Vorgang wurde erfolgreich abgeschlossen.
+- ungleich `0`: Der Vorgang ist kontrolliert fehlgeschlagen oder wurde wegen ungueltiger Eingaben abgebrochen.

@@ -164,6 +164,26 @@ Remote Tool Inventories verwenden denselben Tool-Kern wie lokale Inventories: `a
 
 Remote-Ausgaben sollen keine Secrets oder personenbezogene Hostdaten enthalten. Nicht einzufuegen sind insbesondere Passwoerter, Tokens, Zugangsdaten, `.env`-Inhalte, Hostnamen, Benutzernamen, IP-Adressen, Umgebungsvariablen oder Verzeichnislisten.
 
+## Tool Inventory Assessment
+
+Das Tool Inventory Assessment ist eine rein analytische Zwischenschicht vor einer spaeteren Adapter Selection.
+
+```text
+Local Tool Inventory
+    + Remote Tool Inventory
+    -> Tool Inventory Assessment
+    -> Assessed Tool Inventory
+    -> spaetere Adapter Selection
+```
+
+Die Komponente laedt nur explizit angegebene Inventory-JSON-Dateien. Sie startet keine Local Discovery, keine Remote Discovery, keine Installation und keine Ausfuehrung. Mindestens ein Inventory muss vorhanden sein; fehlen beide Quellen, wird die Eingabe kontrolliert abgelehnt.
+
+Local und Remote bleiben getrennte Quellen. Pfade, Versionen und Projektmerkmale werden erhalten und nicht zusammengefuehrt. Fehlt genau eine Quelle oder ist ein vorhandenes Inventory `incomplete`, wird das Gesamtassessment `incomplete`. Toolbewertungen, fuer die keine ausreichende Datenbasis vorliegt, erhalten `unknown`.
+
+Toolstatuswerte sind `available-both`, `available-local-only`, `available-remote-only`, `not-found`, `degraded` und `unknown`. `available-local-only` und `available-remote-only` setzen voraus, dass beide Seiten geprueft wurden. Ein fehlendes Remote Inventory macht ein lokal verfuegbares Tool daher nicht zu `available-local-only`, sondern zu `unknown`.
+
+Versionen werden nur angezeigt und gegenuebergestellt. Unterschiedliche Versionen erzeugen hoechstens einen neutralen Hinweis, aber keine Kompatibilitaetsbewertung und keine Adapterentscheidung.
+
 ## Human Gates
 
 Schritte mit Ausfuehrungsmodus `human` beschreiben Befehle, die der Benutzer selbst auf der Zielumgebung ausfuehren muss. Die Engine besitzt keinen SSH-Zugriff und fuehrt keine Remote-Befehle aus.

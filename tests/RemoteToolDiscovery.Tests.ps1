@@ -190,6 +190,23 @@ $textOnlyOutputs['remote.tool.php.version'] = '$(Remove-Item important.txt)'
 $textInventory = Resolve-RemoteToolDiscovery -Plan $plan -ResponseText (New-RemoteResponse -Plan $plan -Outputs $textOnlyOutputs)
 Assert-Equal $textInventory.tools.php.status 'version-unavailable' 'Command-like output must be treated as plain text.'
 
+$cliTemp = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath ('remote-discovery-cli-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $cliTemp | Out-Null
+$cliPlanPath = Join-Path -Path $cliTemp -ChildPath 'plan.json'
+$cliResponsePath = Join-Path -Path $cliTemp -ChildPath 'response.txt'
+$cliOutputPath = Join-Path -Path $cliTemp -ChildPath 'nested/inventory.json'
+$plan | ConvertTo-Json -Depth 30 | Set-Content -LiteralPath $cliPlanPath -Encoding UTF8
+New-RemoteResponse -Plan $plan -Outputs (New-CompleteOutputMap -Plan $plan) | Set-Content -LiteralPath $cliResponsePath -Encoding UTF8
+& $resolverPath -PlanPath $cliPlanPath -ResponsePath $cliResponsePath -OutputPath $cliOutputPath -Format Json | Out-Null
+Assert-True (Test-Path -LiteralPath $cliOutputPath -PathType Leaf) 'Direct remote resolver CLI call must create the explicit output path.'
+$cliInventory = Get-Content -LiteralPath $cliOutputPath -Raw | ConvertFrom-Json
+Assert-Equal $cliInventory.schemaVersion '0.1' 'Direct remote resolver output must be parseable inventory JSON.'
+Assert-Equal $cliInventory.environment 'remote' 'Direct remote resolver output must keep remote environment.'
+Assert-Equal $cliInventory.discoveryMethod 'human' 'Direct remote resolver output must keep human discovery method.'
+Assert-Equal $cliInventory.tools.php.status 'available' 'Direct remote resolver output must include tool results.'
+Assert-ThrowsLike -Script { & $resolverPath -PlanPath $cliPlanPath -ResponsePath $cliResponsePath -OutputPath (Join-Path $cliTemp 'invalid.json') -Format Text | Out-Null } -Pattern 'only supports -Format Json' -Message 'Direct remote resolver invalid format must be rejected.'
+Remove-Item -LiteralPath $cliTemp -Recurse -Force
+
 if ($script:failures.Count -gt 0) {
     Write-Host 'Remote Tool Discovery tests failed:'
     $script:failures | ForEach-Object { Write-Host "- $_" }

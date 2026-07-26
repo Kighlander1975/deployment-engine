@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0, Mandatory = $true)]
-    [ValidateSet('plan', 'discover-tools', 'remote-discovery-plan', 'resolve-remote-discovery')]
+    [ValidateSet('plan', 'discover-tools', 'remote-discovery-plan', 'resolve-remote-discovery', 'assess-tool-inventories')]
     [string] $Command,
 
     [string] $Analysis,
@@ -15,6 +15,10 @@ param(
     [string] $PlanPath,
 
     [string] $ResponsePath,
+
+    [string] $LocalInventoryPath,
+
+    [string] $RemoteInventoryPath,
 
     [string] $Format,
 
@@ -91,6 +95,21 @@ switch ($Command) {
 
         $remoteResolvePath = Join-Path -Path $engineRoot -ChildPath 'src/ps1/Resolve-RemoteToolDiscovery.ps1'
         & $remoteResolvePath -PlanPath $PlanPath -ResponsePath $ResponsePath -Format Json -OutputPath $OutputPath
+        exit 0
+    }
+    'assess-tool-inventories' {
+        if ([string]::IsNullOrWhiteSpace($Format)) {
+            $Format = 'Json'
+        }
+        if ($Format -ne 'Json') {
+            throw "assess-tool-inventories only supports -Format Json."
+        }
+        if ([string]::IsNullOrWhiteSpace($LocalInventoryPath) -and [string]::IsNullOrWhiteSpace($RemoteInventoryPath)) {
+            throw "Missing required parameter for 'assess-tool-inventories': provide -LocalInventoryPath, -RemoteInventoryPath, or both."
+        }
+
+        $assessmentPath = Join-Path -Path $engineRoot -ChildPath 'src/ps1/Resolve-ToolInventoryAssessment.ps1'
+        & $assessmentPath -LocalInventoryPath $LocalInventoryPath -RemoteInventoryPath $RemoteInventoryPath -Format Json -OutputPath $OutputPath
         exit 0
     }
 }
