@@ -360,9 +360,16 @@ function New-DeploymentStrategyStep {
 }
 
 function New-DeploymentStrategyApprovalGate {
+    param(
+        [Parameter(Mandatory = $true)][int] $Sequence,
+        [string[]] $DependsOn = @()
+    )
+
     return [pscustomobject]@{
         gateId = 'deployment.approval'
         stepId = 'deployment.approval'
+        sequence = $Sequence
+        dependsOn = @($DependsOn | Sort-Object -Unique)
         gateType = 'approval'
         title = 'Deployment freigeben'
         reason = 'Das Deployment veraendert den Stand des Zielsystems.'
@@ -395,6 +402,7 @@ function Resolve-DeploymentStrategy {
         New-DeploymentStrategyStep -StepId 'remote.application.finalize' -Sequence 800 -OperationType 'application-finalize' -Actor 'human-command' -ExecutionLocation 'remote' -DependsOn @('remote.archive.extract') -CommandGenerationRequired $true -CommandExecutionMode 'copy-and-run' -InputReferences @('resolvedExecutionPlan.steps', 'remote.releaseDirectory') -Diagnostic 'Later command generation must derive required application finalization operations from the resolved execution plan.' -Feedback (New-DeploymentStrategyFeedback)
         New-DeploymentStrategyStep -StepId 'deployment.verify' -Sequence 900 -OperationType 'deployment-verify' -Actor 'review' -ExecutionLocation 'review' -DependsOn @('remote.application.finalize') -CommandGenerationRequired $false -CommandExecutionMode 'none' -InputReferences @('remote.commandResults') -Diagnostic 'Review required evidence from previous remote steps; success is not assumed automatically.'
     )
+    $approvalStep = @($steps | Where-Object { $_.stepId -eq 'deployment.approval' } | Select-Object -First 1)[0]
 
     return [pscustomobject]@{
         schemaVersion = '0.1'
@@ -407,7 +415,7 @@ function Resolve-DeploymentStrategy {
             localAutomationPolicy = 'automatic-unless-decision-required'
         }
         steps = @($steps | Sort-Object sequence, stepId)
-        humanGates = @((New-DeploymentStrategyApprovalGate))
+        humanGates = @((New-DeploymentStrategyApprovalGate -Sequence ([int] $approvalStep.sequence) -DependsOn @($approvalStep.dependsOn)))
         diagnostic = 'Deployment strategy is ready for later command generation.'
     }
 }

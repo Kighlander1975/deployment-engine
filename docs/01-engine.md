@@ -1,6 +1,6 @@
 # Engine Pipeline
 
-Die Pipeline der Version `0.1` ist bewusst in Analyse, Planerzeugung, Capability-Aufloesung, Tool Discovery, Adapterentscheidung, Deployment Strategy, Command Generation und spaetere Ausfuehrung getrennt.
+Die Pipeline der Version `0.1` ist bewusst in Analyse, Planerzeugung, Capability-Aufloesung, Tool Discovery, Adapterentscheidung, Deployment Strategy, Command Generation, Command Session und spaetere Ausfuehrung getrennt.
 
 ## Project Detection
 
@@ -65,11 +65,11 @@ Der Resolver fuehrt keine Aktionen aus. Er trifft keine automatische Adapterwahl
 
 Deployment-Laufzeitdaten und erzeugte Artefakte werden ausserhalb des Deployment-Engine-Repositories und des zu deployenden Projekt-Repositories abgelegt. Jeder Deployment-Lauf erhaelt ein eigenes externes Run-Verzeichnis.
 
-Spaetere Laufdaten koennen beispielsweise Inventare, Assessments, Entscheidungen, Strategien, Command Plans, Archive, Logs und Reports umfassen. Adapter Eligibility Evaluation, Adapter Selection, Deployment Strategy und Command Generation schreiben weiterhin nur dann eine Datei, wenn explizit `-OutputPath` uebergeben wurde.
+Spaetere Laufdaten koennen beispielsweise Inventare, Assessments, Entscheidungen, Strategien, Command Plans, Command Sessions, Archive, Logs und Reports umfassen. Adapter Eligibility Evaluation, Adapter Selection, Deployment Strategy, Command Generation und Command Session schreiben weiterhin nur dann eine Datei, wenn explizit `-OutputPath` uebergeben wurde.
 
 Vor einem spaeteren automatischen Deployment wird der Arbeitsbaum des zu deployenden Projekts geprueft. In V1 blockieren sichtbare Aenderungen aus `git status --porcelain` den automatischen Deploy.
 
-Runtime Directory Management und Clean-Tree Gate sind noch nicht implementiert. Beide Architekturbausteine muessen vor Archivierung oder Executor umgesetzt werden. Die aktuelle Adapter Eligibility Evaluation, Adapter Selection, Deployment Strategy und Command Generation fuehren keine Git-Statuspruefung aus.
+Runtime Directory Management und Clean-Tree Gate sind noch nicht implementiert. Beide Architekturbausteine muessen vor Archivierung oder Executor umgesetzt werden. Die aktuelle Adapter Eligibility Evaluation, Adapter Selection, Deployment Strategy, Command Generation und Command Session fuehren keine Git-Statuspruefung aus.
 
 Unbekannte Capability IDs fuehren zu einem harten Fehler. Es gibt keine Fallbacks und keine impliziten Shell Commands.
 
@@ -275,6 +275,23 @@ Jeder Command-Eintrag beschreibt `program`, `arguments`, `renderedCommand`, Anze
 V1 kennt `local-operation`, `ssh` und `scp`. `local-operation` ist kein Betriebssystemprogramm, sondern ein strukturierter Platzhalter fuer spaetere lokale Automation. SSH- und SCP-Eintraege werden ausschliesslich als `copy-and-run` modelliert: copyable, aber `executionPermitted = false`. Es wird keine Verbindung aufgebaut, kein Netzwerkzugriff durchgefuehrt, keine Datei uebertragen und kein Command automatisch bestaetigt.
 
 Remote-Ziele und Pfade werden nicht erfunden. Ein gerenderter SSH- oder SCP-Eintrag entsteht nur, wenn SSH-Ziel, absoluter Remote-Pfad und bei Upload ein lokaler Artefaktpfad eindeutig in den Eingaben vorhanden sind. Fehlen diese Angaben oder sind Remote-Pfade relativ, wird der Command Plan `incomplete`. Target Discovery, Runtime Directory Management, Archivierung und Executor bleiben spaetere Bausteine.
+
+## Command Session
+
+Die Command Session ist eine zustandsverwaltende Schicht nach dem Command Plan und vor spaeterer Human Interaction oder einem spaeteren Executor.
+
+```text
+Command Plan
+    -> Command Session
+    -> spaetere Human Interaction
+    -> spaeterer Executor
+```
+
+Die Session trennt Plan und Laufzeitstatus. Sie liest einen validierten Command Plan, erzeugt deterministische Items fuer Commands und Human Gates, berechnet das naechste zulaessige Item und verarbeitet danach ausschliesslich strukturierte Events. Sie startet keine Prozesse, fuehrt keine Commands aus, baut keine Remote-Verbindungen auf, bestaetigt nichts automatisch und erzeugt keine Zeitstempel.
+
+Session-Statuswerte sind `created`, `waiting`, `in-progress`, `completed`, `blocked`, `failed` und `cancelled`. Item-Statuswerte sind `pending`, `ready`, `waiting-for-human`, `running`, `completed`, `failed`, `skipped`, `blocked` und `cancelled`. Lokale Automation darf hoechstens ueber `automation-started` und `automation-result` von `ready` nach `running` und danach nach `completed` oder `failed` wechseln; dabei wird kein Prozess gestartet. Human Commands wechseln erst durch ein `human-command-started` Event nach `running` und danach durch ein `human-command-result` Event nach `completed` oder `failed`. Sobald mindestens ein Item `running` ist, steht die Session auf `in-progress`.
+
+Events benoetigen eine stabile vom Aufrufer gelieferte `eventId`. Doppelte Event-IDs werden abgelehnt. Human Gates uebernehmen `sequence` und `dependsOn` aus Strategy beziehungsweise Command Plan; das zentrale Deployment-Approval wird erst `waiting-for-human`, wenn seine modellierten Abhaengigkeiten abgeschlossen sind. Entscheidungen werden nur ueber `human-decision-submitted` verarbeitet; `approved` erlaubt Fortsetzung, `rejected` beendet die Session kontrolliert. Fuer Human-Command-Ergebnisse ist ausschliesslich `exitStatus` technisch massgeblich; stdout und stderr werden strukturiert gespeichert, aber nicht als Freitext-Erfolgsheuristik interpretiert. Review-Ergebnisse kennen `approved`, `rejected` und `inconclusive`. Retry, Parallelisierung, Persistenzdatenbank und Executor sind nicht Teil von V1.
 
 ## Human Gates
 

@@ -273,6 +273,20 @@ function Assert-DeploymentStrategyForCommandGeneration {
     if ($approvalGates.Count -ne 1) {
         throw "Deployment strategy validation failed: exactly one central deployment approval gate is required."
     }
+    foreach ($gate in @($DeploymentStrategy.humanGates)) {
+        if (-not (Test-CommandPlanObjectLike -Value $gate)) {
+            throw "Deployment strategy validation failed: each human gate must be an object."
+        }
+        Assert-CommandPlanString -Object $gate -Name 'gateId' -Context 'Deployment strategy human gate'
+        Assert-CommandPlanString -Object $gate -Name 'stepId' -Context "Deployment strategy human gate '$($gate.gateId)'"
+        $gateStep = @($DeploymentStrategy.steps | Where-Object { $_.stepId -eq [string] $gate.stepId } | Select-Object -First 1)
+        if ($gateStep.Count -eq 0) {
+            throw "Deployment strategy human gate '$($gate.gateId)' validation failed: stepId '$($gate.stepId)' does not reference a strategy step."
+        }
+        if ($gateStep[0].actor -ne 'human-decision') {
+            throw "Deployment strategy human gate '$($gate.gateId)' validation failed: referenced strategy step must use actor human-decision."
+        }
+    }
 
     $json = $DeploymentStrategy | ConvertTo-Json -Depth 50
     if ($json -match '"commands"\s*:|"renderedCommand"\s*:') {
@@ -378,6 +392,7 @@ function New-CommandPlanEntry {
         actor = [string] $StrategyStep.actor
         executionLocation = [string] $StrategyStep.executionLocation
         executionMode = [string] $StrategyStep.commandExecutionMode
+        dependsOn = @($StrategyStep.dependsOn | ForEach-Object { [string] $_ } | Sort-Object -Unique)
         program = $Program
         arguments = @($Arguments)
         workingDirectory = ''
@@ -522,6 +537,18 @@ function New-AutomationCommandEntry {
     return New-CommandPlanEntry -StrategyStep $StrategyStep -Program 'local-operation' -Arguments $arguments -RenderedCommand '' -Title ([string] $StrategyStep.stepId) -Description 'Structured local operation for later executor support.' -Copyable $false
 }
 
+function Resolve-CommandPlanHumanGates {
+    param([Parameter(Mandatory = $true)][object] $DeploymentStrategy)
+
+    foreach ($gate in @($DeploymentStrategy.humanGates)) {
+        $gateCopy = $gate | ConvertTo-Json -Depth 30 | ConvertFrom-Json
+        $strategyStep = @($DeploymentStrategy.steps | Where-Object { $_.stepId -eq [string] $gateCopy.stepId } | Select-Object -First 1)[0]
+        Add-Member -InputObject $gateCopy -MemberType NoteProperty -Name 'sequence' -Value ([int] $strategyStep.sequence) -Force
+        Add-Member -InputObject $gateCopy -MemberType NoteProperty -Name 'dependsOn' -Value @($strategyStep.dependsOn | ForEach-Object { [string] $_ } | Sort-Object -Unique) -Force
+        $gateCopy
+    }
+}
+
 function Resolve-CommandPlan {
     param(
         [Parameter(Mandatory = $true)][object] $ExecutionPlan,
@@ -561,6 +588,7 @@ function Resolve-CommandPlan {
             remoteExecutionMode = 'copy-and-run'
         }
         commands = @($commands | Sort-Object sequence, commandId)
+        humanGates = @(Resolve-CommandPlanHumanGates -DeploymentStrategy $DeploymentStrategy)
         diagnostic = if ($status -eq 'ready') { 'Command plan is ready for manual review and copy-and-run handling.' } else { 'Command plan is incomplete because required target or artifact information is missing.' }
     }
 }

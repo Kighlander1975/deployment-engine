@@ -149,7 +149,7 @@ function New-TestDeploymentStrategy {
             New-TestStrategyStep -StepId 'deployment.verify' -Sequence 900 -OperationType 'deployment-verify' -Actor 'review' -Location 'review' -Mode 'none' -Required $false -DependsOn @('remote.application.finalize')
         )
         humanGates = @(
-            [pscustomobject]@{ gateId = 'deployment.approval'; stepId = 'deployment.approval'; gateType = 'approval'; blocksContinuation = $true }
+            [pscustomobject]@{ gateId = 'deployment.approval'; stepId = 'deployment.approval'; gateType = 'approval'; blocksContinuation = $true; allowedResponses = @('approved', 'rejected') }
         )
         diagnostic = ''
     }
@@ -194,12 +194,17 @@ Assert-Equal ((@($zipPlan.commands) | ForEach-Object { $_.commandId }) -join ','
 Assert-Equal (Get-Command -CommandPlan $zipPlan -CommandId 'archive.create').program 'local-operation' 'Local automation must use structured local-operation program.'
 Assert-Equal (Get-Command -CommandPlan $zipPlan -CommandId 'archive.create').renderedCommand '' 'Local operation must not invent a shell command.'
 Assert-Equal (Get-Command -CommandPlan $zipPlan -CommandId 'remote.release-directory.prepare').program 'ssh' 'Remote prepare must use ssh program.'
+Assert-Equal ((Get-Command -CommandPlan $zipPlan -CommandId 'remote.release-directory.prepare').dependsOn -join ',') 'deployment.approval' 'Command plan must carry strategy dependencies.'
 Assert-Equal (Get-Command -CommandPlan $zipPlan -CommandId 'remote.archive.upload').program 'scp' 'Archive upload must use scp program.'
 Assert-Equal (Get-Command -CommandPlan $zipPlan -CommandId 'remote.archive.extract').executionMode 'copy-and-run' 'Remote extract must be copy-and-run.'
 Assert-True (Get-Command -CommandPlan $zipPlan -CommandId 'remote.archive.extract').display.copyable 'Human commands must be copyable.'
 Assert-Equal ((Get-Command -CommandPlan $zipPlan -CommandId 'remote.archive.upload').feedback.expectedData -join ',') 'exitStatus,stdout,stderr' 'Human commands must request structured feedback.'
 Assert-True ((Get-Command -CommandPlan $zipPlan -CommandId 'remote.archive.extract').arguments -contains 'extract-zip') 'ZIP adapter must affect extraction intent.'
 Assert-CommandPlanSafe -CommandPlan $zipPlan
+Assert-Equal @($zipPlan.humanGates).Count 1 'Command plan must carry human gates for session control.'
+Assert-Equal (($zipPlan.humanGates[0].allowedResponses) -join ',') 'approved,rejected' 'Command plan human gate must preserve allowed responses.'
+Assert-Equal $zipPlan.humanGates[0].sequence 400 'Command plan human gate must carry strategy sequence.'
+Assert-Equal (($zipPlan.humanGates[0].dependsOn) -join ',') 'archive.create' 'Command plan human gate must carry strategy dependencies.'
 
 $tarPlan = Resolve-CommandPlan -ExecutionPlan (New-TestResolvedPlan) -DeploymentStrategy (New-TestDeploymentStrategy -SelectedAdapterId 'archive.tar')
 Assert-Equal $tarPlan.status 'ready' 'Complete TAR inputs must produce ready command plan.'

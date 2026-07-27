@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0, Mandatory = $true)]
-    [ValidateSet('plan', 'discover-tools', 'remote-discovery-plan', 'resolve-remote-discovery', 'assess-tool-inventories', 'evaluate-adapter-eligibility', 'select-adapter', 'build-deployment-strategy', 'generate-commands')]
+    [ValidateSet('plan', 'discover-tools', 'remote-discovery-plan', 'resolve-remote-discovery', 'assess-tool-inventories', 'evaluate-adapter-eligibility', 'select-adapter', 'build-deployment-strategy', 'generate-commands', 'create-command-session', 'update-command-session')]
     [string] $Command,
 
     [string] $Analysis,
@@ -29,6 +29,12 @@ param(
     [string] $AdapterSelectionPath,
 
     [string] $DeploymentStrategyPath,
+
+    [string] $CommandPlanPath,
+
+    [string] $CommandSessionPath,
+
+    [string] $SessionEventPath,
 
     [string] $Format,
 
@@ -186,6 +192,39 @@ switch ($Command) {
 
         $commandPlanPath = Join-Path -Path $engineRoot -ChildPath 'src/ps1/Build-CommandPlan.ps1'
         & $commandPlanPath -ExecutionPlanPath $ExecutionPlanPath -DeploymentStrategyPath $DeploymentStrategyPath -Format Json -OutputPath $OutputPath
+        exit 0
+    }
+    'create-command-session' {
+        if ([string]::IsNullOrWhiteSpace($Format)) {
+            $Format = 'Json'
+        }
+        if ($Format -ne 'Json') {
+            throw "create-command-session only supports -Format Json."
+        }
+        if ([string]::IsNullOrWhiteSpace($CommandPlanPath)) {
+            throw "Missing required parameter for 'create-command-session': -CommandPlanPath"
+        }
+
+        $sessionPath = Join-Path -Path $engineRoot -ChildPath 'src/ps1/CommandSession.ps1'
+        & $sessionPath -Operation Create -CommandPlanPath $CommandPlanPath -Format Json -OutputPath $OutputPath
+        exit 0
+    }
+    'update-command-session' {
+        if ([string]::IsNullOrWhiteSpace($Format)) {
+            $Format = 'Json'
+        }
+        if ($Format -ne 'Json') {
+            throw "update-command-session only supports -Format Json."
+        }
+        if ([string]::IsNullOrWhiteSpace($CommandSessionPath)) {
+            throw "Missing required parameter for 'update-command-session': -CommandSessionPath"
+        }
+        if ([string]::IsNullOrWhiteSpace($SessionEventPath)) {
+            throw "Missing required parameter for 'update-command-session': -SessionEventPath"
+        }
+
+        $sessionPath = Join-Path -Path $engineRoot -ChildPath 'src/ps1/CommandSession.ps1'
+        & $sessionPath -Operation Update -CommandSessionPath $CommandSessionPath -SessionEventPath $SessionEventPath -Format Json -OutputPath $OutputPath
         exit 0
     }
 }

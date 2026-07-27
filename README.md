@@ -25,6 +25,7 @@ Analyzer
     -> Adapter Selection
     -> Deployment Strategy
     -> Command Generation
+    -> Command Session
     -> spaeterer Executor
 ```
 
@@ -52,6 +53,8 @@ Deployment Strategy kombiniert den Resolved Execution Plan mit der Adapter Selec
 
 Command Generation erzeugt aus Resolved Execution Plan und Deployment Strategy einen strukturierten Command Plan. `program` und `arguments` sind die fuehrenden Daten; `renderedCommand` ist nur eine deterministische Darstellung zum Kopieren. Die Phase fuehrt nichts aus und erlaubt keine automatische Ausfuehrung.
 
+Command Session trennt den Command Plan vom spaeteren Laufzeitstatus. Sie erzeugt einen deterministischen Session-Zustand, verarbeitet ausschliesslich strukturierte Events und fuehrt keine Commands aus.
+
 ## Unterstuetzter Umfang in Version 0.1
 
 - Projektmanifest lesen und validieren
@@ -70,6 +73,7 @@ Command Generation erzeugt aus Resolved Execution Plan und Deployment Strategy e
 - Adapter Selection fuer `archive.zip` und `archive.tar` nach zentraler Adapter-Prioritaet
 - Deployment Strategy mit Actor-Modell `automation`, `human-decision`, `human-command` und `review`
 - Command Generation mit strukturiertem Command Model und `executionAllowed = false`
+- Command Session mit eventbasiertem Statusmodell ohne Ausfuehrung oder automatische Freigabe
 - Agent-, Human- und Review-Schritte unterscheiden
 - verbindliche Pausepunkte, Abhaengigkeiten und Validierungsanforderungen modellieren
 - Migrationen als High-Risk-Schritte mit Safety Review, `migrate:status` und ausdruecklicher Freigabe modellieren
@@ -244,6 +248,25 @@ Statuswerte sind `ready`, `incomplete` und `blocked`. Der normale V1-Erfolgsfall
 Der Command Plan beschreibt spaetere Ausfuehrungseinheiten, fuehrt sie aber nicht aus. Jeder Eintrag besitzt `program`, `arguments`, `renderedCommand`, Anzeigeinformationen, Feedback-Anforderungen und Safety-Flags. `program` und `arguments` sind fachlich fuehrend; `renderedCommand` wird nur daraus erzeugt.
 
 In V1 sind `local-operation`, `ssh` und `scp` als Programmart unterstuetzt. `local-operation` ist ein nicht ausfuehrbarer Platzhalter fuer spaetere lokale Automation. SSH- und SCP-Eintraege bleiben `copy-and-run`, `copyable = true` und `executionPermitted = false`; der Benutzer fuehrt sie spaeter manuell aus und liefert Rueckmeldung. Fehlen SSH-Ziel, absoluter Remote-Pfad oder lokaler Artefaktpfad, wird der Command Plan `incomplete` statt Pfade oder Ziele zu erfinden. Target Discovery, Runtime Directory Management und Executor bleiben spaetere Bausteine.
+
+## Command Session verwalten
+
+```powershell
+.\tools\deployment-engine\bin\deployment-engine.ps1 create-command-session `
+    -CommandPlanPath (Join-Path $runPath 'decisions\command-plan.json') `
+    -OutputPath (Join-Path $runPath 'decisions\command-session.json')
+```
+
+```powershell
+.\tools\deployment-engine\bin\deployment-engine.ps1 update-command-session `
+    -CommandSessionPath (Join-Path $runPath 'decisions\command-session.json') `
+    -SessionEventPath (Join-Path $runPath 'input\session-event.json') `
+    -OutputPath (Join-Path $runPath 'decisions\command-session.updated.json')
+```
+
+Die Command Session verwaltet nur Zustand. Items entstehen aus Command-Plan-Commands und Human Gates. Statuswerte sind `created`, `waiting`, `in-progress`, `completed`, `blocked`, `failed` und `cancelled`; einzelne Items verwenden `pending`, `ready`, `waiting-for-human`, `running`, `completed`, `failed`, `skipped`, `blocked` und `cancelled`.
+
+Zustandsaenderungen erfolgen ausschliesslich ueber Events mit stabiler `eventId`, zum Beispiel `automation-started`, `automation-result`, `human-decision-submitted`, `human-command-started`, `human-command-result`, `review-result` oder `session-cancelled`. Automation-Items benoetigen ein Start-Event und danach ein strukturiertes Result-Event; dabei wird kein Prozess gestartet. Human Gates uebernehmen `sequence` und `dependsOn` aus Strategy beziehungsweise Command Plan und werden erst aktiv, wenn ihre modellierten Abhaengigkeiten abgeschlossen sind. Human Commands benoetigen ebenfalls ein Start-Event und danach ein Result-Event; der technische Erfolg wird ausschliesslich ueber `exitStatus = 0` bewertet. Sobald mindestens ein Item `running` ist, steht die Session auf `in-progress`. Es gibt keine automatische Freigabe, keine automatische Erfolgserkennung aus Freitext, keine Zeitstempel und keinen Retry. Der Executor bleibt ein spaeterer Baustein.
 
 Exit-Codes:
 
