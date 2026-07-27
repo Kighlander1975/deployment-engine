@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0, Mandatory = $true)]
-    [ValidateSet('plan', 'discover-tools', 'remote-discovery-plan', 'resolve-remote-discovery', 'assess-tool-inventories', 'evaluate-adapter-eligibility', 'select-adapter', 'build-deployment-strategy', 'generate-commands', 'create-command-session', 'update-command-session', 'evaluate-execution-admission', 'build-executor-request')]
+    [ValidateSet('plan', 'discover-tools', 'remote-discovery-plan', 'resolve-remote-discovery', 'assess-tool-inventories', 'evaluate-adapter-eligibility', 'select-adapter', 'build-deployment-strategy', 'generate-commands', 'create-command-session', 'update-command-session', 'evaluate-execution-admission', 'build-executor-request', 'execute-local-operation', 'build-automation-started-event', 'build-automation-result-event')]
     [string] $Command,
 
     [string] $Analysis,
@@ -36,7 +36,13 @@ param(
 
     [string] $ExecutionAdmissionPath,
 
+    [string] $ExecutorRequestPath,
+
+    [string] $ExecutorResultPath,
+
     [string] $SessionEventPath,
+
+    [string] $Timestamp,
 
     [string] $Format,
 
@@ -266,6 +272,66 @@ switch ($Command) {
 
         $executorRequestPath = Join-Path -Path $engineRoot -ChildPath 'src/ps1/Build-ExecutorRequest.ps1'
         & $executorRequestPath -CommandPlanPath $CommandPlanPath -CommandSessionPath $CommandSessionPath -ExecutionAdmissionPath $ExecutionAdmissionPath -Format Json -OutputPath $OutputPath
+        exit 0
+    }
+    'execute-local-operation' {
+        if ([string]::IsNullOrWhiteSpace($Format)) {
+            $Format = 'Json'
+        }
+        if ($Format -ne 'Json') {
+            throw "execute-local-operation only supports -Format Json."
+        }
+        if ([string]::IsNullOrWhiteSpace($ExecutorRequestPath)) {
+            throw "Missing required parameter for 'execute-local-operation': -ExecutorRequestPath"
+        }
+
+        $localExecutorPath = Join-Path -Path $engineRoot -ChildPath 'src/ps1/Invoke-LocalOperationExecutor.ps1'
+        & $localExecutorPath -ExecutorRequestPath $ExecutorRequestPath -Format Json -OutputPath $OutputPath
+        exit 0
+    }
+    'build-automation-started-event' {
+        if ([string]::IsNullOrWhiteSpace($Format)) {
+            $Format = 'Json'
+        }
+        if ($Format -ne 'Json') {
+            throw "build-automation-started-event only supports -Format Json."
+        }
+        if ([string]::IsNullOrWhiteSpace($CommandSessionPath)) {
+            throw "Missing required parameter for 'build-automation-started-event': -CommandSessionPath"
+        }
+        if ([string]::IsNullOrWhiteSpace($ExecutorRequestPath)) {
+            throw "Missing required parameter for 'build-automation-started-event': -ExecutorRequestPath"
+        }
+        if ([string]::IsNullOrWhiteSpace($Timestamp)) {
+            throw "Missing required parameter for 'build-automation-started-event': -Timestamp"
+        }
+
+        $automationEventPath = Join-Path -Path $engineRoot -ChildPath 'src/ps1/Build-AutomationEvent.ps1'
+        & $automationEventPath -Operation Started -CommandSessionPath $CommandSessionPath -ExecutorRequestPath $ExecutorRequestPath -Timestamp $Timestamp -Format Json -OutputPath $OutputPath
+        exit 0
+    }
+    'build-automation-result-event' {
+        if ([string]::IsNullOrWhiteSpace($Format)) {
+            $Format = 'Json'
+        }
+        if ($Format -ne 'Json') {
+            throw "build-automation-result-event only supports -Format Json."
+        }
+        if ([string]::IsNullOrWhiteSpace($CommandSessionPath)) {
+            throw "Missing required parameter for 'build-automation-result-event': -CommandSessionPath"
+        }
+        if ([string]::IsNullOrWhiteSpace($ExecutorRequestPath)) {
+            throw "Missing required parameter for 'build-automation-result-event': -ExecutorRequestPath"
+        }
+        if ([string]::IsNullOrWhiteSpace($ExecutorResultPath)) {
+            throw "Missing required parameter for 'build-automation-result-event': -ExecutorResultPath"
+        }
+        if ([string]::IsNullOrWhiteSpace($Timestamp)) {
+            throw "Missing required parameter for 'build-automation-result-event': -Timestamp"
+        }
+
+        $automationEventPath = Join-Path -Path $engineRoot -ChildPath 'src/ps1/Build-AutomationEvent.ps1'
+        & $automationEventPath -Operation Result -CommandSessionPath $CommandSessionPath -ExecutorRequestPath $ExecutorRequestPath -ExecutorResultPath $ExecutorResultPath -Timestamp $Timestamp -Format Json -OutputPath $OutputPath
         exit 0
     }
 }

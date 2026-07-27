@@ -381,7 +381,8 @@ function New-CommandPlanEntry {
         [string] $Title = '',
         [string] $Description = '',
         [bool] $Copyable = $false,
-        [string] $Diagnostic = ''
+        [string] $Diagnostic = '',
+        [object] $Operation = ([pscustomobject]@{})
     )
 
     return [pscustomobject]@{
@@ -397,6 +398,7 @@ function New-CommandPlanEntry {
         arguments = @($Arguments)
         workingDirectory = ''
         environment = [pscustomobject]@{}
+        operation = ($Operation | ConvertTo-Json -Depth 20 | ConvertFrom-Json)
         renderedCommand = $RenderedCommand
         display = [pscustomobject]@{
             title = $Title
@@ -527,14 +529,54 @@ function New-HumanCommandEntry {
     return New-IncompleteCommandEntry -StrategyStep $StrategyStep -Diagnostic "No V1 renderer exists for strategy step '$($StrategyStep.stepId)'."
 }
 
+function New-AutomationOperationData {
+    param(
+        [Parameter(Mandatory = $true)][object] $ExecutionPlan,
+        [Parameter(Mandatory = $true)][object] $DeploymentStrategy,
+        [Parameter(Mandatory = $true)][object] $StrategyStep
+    )
+
+    $inputs = Get-CommandGenerationInputs -DeploymentStrategy $DeploymentStrategy
+    $sourcePath = Get-OptionalInputString -Inputs $inputs -Name 'sourcePath'
+    if ([string]::IsNullOrWhiteSpace($sourcePath) -and (Test-CommandPlanProperty -Object $ExecutionPlan.project -Name 'applicationRoot')) {
+        $sourcePath = [string] $ExecutionPlan.project.applicationRoot
+    }
+    if ([string]::IsNullOrWhiteSpace($sourcePath) -and (Test-CommandPlanProperty -Object $ExecutionPlan.project -Name 'root')) {
+        $sourcePath = [string] $ExecutionPlan.project.root
+    }
+
+    switch ([string] $StrategyStep.operationType) {
+        'source-validate' {
+            return [pscustomobject]@{ sourcePath = $sourcePath }
+        }
+        'archive-create' {
+            $archiveSourcePath = Get-OptionalInputString -Inputs $inputs -Name 'archiveSourcePath'
+            if ([string]::IsNullOrWhiteSpace($archiveSourcePath)) { $archiveSourcePath = $sourcePath }
+            return [pscustomobject]@{
+                sourcePath = $archiveSourcePath
+                artifactPath = (Get-OptionalInputString -Inputs $inputs -Name 'localArtifactPath')
+            }
+        }
+        default {
+            return [pscustomobject]@{}
+        }
+    }
+}
+
 function New-AutomationCommandEntry {
-    param([Parameter(Mandatory = $true)][object] $StrategyStep, [Parameter(Mandatory = $true)][string] $SelectedAdapterId)
+    param(
+        [Parameter(Mandatory = $true)][object] $ExecutionPlan,
+        [Parameter(Mandatory = $true)][object] $DeploymentStrategy,
+        [Parameter(Mandatory = $true)][object] $StrategyStep,
+        [Parameter(Mandatory = $true)][string] $SelectedAdapterId
+    )
 
     $arguments = @([string] $StrategyStep.operationType)
     if ($StrategyStep.operationType -eq 'archive-create') {
         $arguments += $SelectedAdapterId
     }
-    return New-CommandPlanEntry -StrategyStep $StrategyStep -Program 'local-operation' -Arguments $arguments -RenderedCommand '' -Title ([string] $StrategyStep.stepId) -Description 'Structured local operation for later executor support.' -Copyable $false
+    $operation = New-AutomationOperationData -ExecutionPlan $ExecutionPlan -DeploymentStrategy $DeploymentStrategy -StrategyStep $StrategyStep
+    return New-CommandPlanEntry -StrategyStep $StrategyStep -Program 'local-operation' -Arguments $arguments -RenderedCommand '' -Title ([string] $StrategyStep.stepId) -Description 'Structured local operation for later executor support.' -Copyable $false -Operation $operation
 }
 
 function Resolve-CommandPlanHumanGates {
@@ -564,7 +606,7 @@ function Resolve-CommandPlan {
             continue
         }
         if ($step.actor -eq 'automation') {
-            $commands.Add((New-AutomationCommandEntry -StrategyStep $step -SelectedAdapterId ([string] $DeploymentStrategy.selectedAdapterId)))
+            $commands.Add((New-AutomationCommandEntry -ExecutionPlan $ExecutionPlan -DeploymentStrategy $DeploymentStrategy -StrategyStep $step -SelectedAdapterId ([string] $DeploymentStrategy.selectedAdapterId)))
         } elseif ($step.actor -eq 'human-command') {
             $commands.Add((New-HumanCommandEntry -ExecutionPlan $ExecutionPlan -DeploymentStrategy $DeploymentStrategy -StrategyStep $step))
         }

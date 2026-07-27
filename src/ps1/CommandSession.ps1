@@ -259,6 +259,40 @@ function Get-NextActionableSessionItem {
     return [string] $item[0].itemId
 }
 
+function New-CommandSessionId {
+    param([Parameter(Mandatory = $true)][object] $CommandPlan)
+    $core = [pscustomobject]@{
+        commandPlanType = [string] $CommandPlan.commandPlanType
+        selectedAdapterId = [string] $CommandPlan.selectedAdapterId
+        commands = @($CommandPlan.commands | Sort-Object sequence, commandId | ForEach-Object {
+            [pscustomobject]@{
+                commandId = [string] $_.commandId
+                sequence = [int] $_.sequence
+                operationType = [string] $_.operationType
+                actor = [string] $_.actor
+                executionLocation = [string] $_.executionLocation
+                executionMode = [string] $_.executionMode
+                program = [string] $_.program
+                dependsOn = @($_.dependsOn | ForEach-Object { [string] $_ } | Sort-Object)
+            }
+        })
+        humanGates = @($CommandPlan.humanGates | Sort-Object sequence, gateId | ForEach-Object {
+            [pscustomobject]@{
+                gateId = [string] $_.gateId
+                sequence = [int] $_.sequence
+                dependsOn = @($_.dependsOn | ForEach-Object { [string] $_ } | Sort-Object)
+            }
+        })
+    }
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes(($core | ConvertTo-Json -Depth 60 -Compress))
+    $hash = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        return 'session-' + [System.BitConverter]::ToString($hash.ComputeHash($bytes)).Replace('-', '').Substring(0, 16).ToLowerInvariant()
+    } finally {
+        $hash.Dispose()
+    }
+}
+
 function New-CommandSession {
     param([Parameter(Mandatory = $true)][object] $CommandPlan)
     Assert-CommandPlanForSession -CommandPlan $CommandPlan
@@ -269,6 +303,7 @@ function New-CommandSession {
     $session = [pscustomobject]@{
         schemaVersion = '0.1'
         sessionType = 'deployment-command-session'
+        sessionId = New-CommandSessionId -CommandPlan $CommandPlan
         status = 'created'
         commandPlanType = [string] $CommandPlan.commandPlanType
         selectedAdapterId = [string] $CommandPlan.selectedAdapterId
@@ -290,6 +325,7 @@ function Assert-CommandSession {
     if ($Session.schemaVersion -ne '0.1') { throw "Command session validation failed: unsupported schemaVersion '$($Session.schemaVersion)'." }
     Assert-CommandSessionString -Object $Session -Name 'sessionType' -Context 'Command session'
     if ($Session.sessionType -ne 'deployment-command-session') { throw "Command session validation failed: sessionType must be 'deployment-command-session'." }
+    Assert-CommandSessionString -Object $Session -Name 'sessionId' -Context 'Command session'
     Assert-CommandSessionString -Object $Session -Name 'status' -Context 'Command session'
     Assert-CommandSessionStatus -Status ([string] $Session.status) -Allowed (Get-CommandSessionStatuses) -Context 'Command session'
     if (-not (Test-CommandSessionProperty -Object $Session -Name 'items') -or $null -eq $Session.items) { throw 'Command session validation failed: items must not be null.' }

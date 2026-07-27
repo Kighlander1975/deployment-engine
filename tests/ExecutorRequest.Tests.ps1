@@ -35,6 +35,7 @@ function New-TestCommand {
         arguments = if ($Program -eq 'local-operation') { @($Id) } else { @() }
         workingDirectory = ''
         environment = [pscustomobject]@{}
+        operation = if ($Id -eq 'source.validate') { [pscustomobject]@{ sourcePath = 'D:\Projects\demo' } } else { [pscustomobject]@{} }
         renderedCommand = $RenderedCommand
         display = [pscustomobject]@{ title = $Id; description = ''; copyable = ($Actor -eq 'human-command') }
         feedback = [pscustomobject]@{ required = ($Actor -eq 'human-command'); expectedData = if ($Actor -eq 'human-command') { @('exitStatus', 'stdout', 'stderr') } else { @() } }
@@ -87,8 +88,11 @@ $admissionBefore = $admission | ConvertTo-Json -Depth 100
 $request = Resolve-ExecutorRequest -CommandPlan $plan -CommandSession $session -ExecutionAdmission $admission
 Assert-Equal $request.executorRequestType 'deployment-executor-request' 'Executor request type must be correct.'
 Assert-Equal $request.status 'disabled' 'Valid local automation must create a disabled request.'
+Assert-Equal $request.sessionId $session.sessionId 'Executor request must copy command session sessionId.'
 Assert-Equal $request.itemId 'source.validate' 'Request item id must match admission current item.'
 Assert-Equal $request.commandId 'source.validate' 'Request command id must match command plan.'
+Assert-Equal $request.operationType 'source.validate' 'Request operation type must be explicit.'
+Assert-Equal $request.operation.sourcePath 'D:\Projects\demo' 'Request must carry structured operation data.'
 Assert-Equal $request.executorType 'local-operation' 'Executor type must remain local-operation.'
 Assert-Equal $request.executionPolicy.processStartAllowed $false 'Process start must remain disabled.'
 Assert-Equal $request.executionPolicy.networkAccessAllowed $false 'Network access must remain disabled.'

@@ -1,6 +1,6 @@
 # Engine Pipeline
 
-Die Pipeline der Version `0.1` ist bewusst in Analyse, Planerzeugung, Capability-Aufloesung, Tool Discovery, Adapterentscheidung, Deployment Strategy, Command Generation, Command Session, Execution Admission, Executor Request und spaetere Ausfuehrung getrennt.
+Die Pipeline der Version `0.1` ist bewusst in Analyse, Planerzeugung, Capability-Aufloesung, Tool Discovery, Adapterentscheidung, Deployment Strategy, Command Generation, Command Session, Execution Admission, Executor Request, Local Operation Executor und spaetere Orchestrierung getrennt.
 
 ## Project Detection
 
@@ -65,11 +65,11 @@ Der Resolver fuehrt keine Aktionen aus. Er trifft keine automatische Adapterwahl
 
 Deployment-Laufzeitdaten und erzeugte Artefakte werden ausserhalb des Deployment-Engine-Repositories und des zu deployenden Projekt-Repositories abgelegt. Jeder Deployment-Lauf erhaelt ein eigenes externes Run-Verzeichnis.
 
-Spaetere Laufdaten koennen beispielsweise Inventare, Assessments, Entscheidungen, Strategien, Command Plans, Command Sessions, Execution Admissions, Executor Requests, Archive, Logs und Reports umfassen. Adapter Eligibility Evaluation, Adapter Selection, Deployment Strategy, Command Generation, Command Session, Execution Admission und Executor Request schreiben weiterhin nur dann eine Datei, wenn explizit `-OutputPath` uebergeben wurde.
+Spaetere Laufdaten koennen beispielsweise Inventare, Assessments, Entscheidungen, Strategien, Command Plans, Command Sessions, Execution Admissions, Executor Requests, Executor Results, Archive, Logs und Reports umfassen. Adapter Eligibility Evaluation, Adapter Selection, Deployment Strategy, Command Generation, Command Session, Execution Admission, Executor Request und Local Operation Executor schreiben weiterhin nur dann eine Datei, wenn explizit `-OutputPath` uebergeben wurde.
 
 Vor einem spaeteren automatischen Deployment wird der Arbeitsbaum des zu deployenden Projekts geprueft. In V1 blockieren sichtbare Aenderungen aus `git status --porcelain` den automatischen Deploy.
 
-Runtime Directory Management und Clean-Tree Gate sind noch nicht implementiert. Beide Architekturbausteine muessen vor Archivierung oder Executor umgesetzt werden. Die aktuelle Adapter Eligibility Evaluation, Adapter Selection, Deployment Strategy, Command Generation, Command Session und Execution Admission fuehren keine Git-Statuspruefung aus.
+Runtime Directory Management und Clean-Tree Gate sind noch nicht implementiert. Beide Architekturbausteine muessen vor einem orchestrierten Deployment umgesetzt werden. Die aktuelle Adapter Eligibility Evaluation, Adapter Selection, Deployment Strategy, Command Generation, Command Session, Execution Admission, Executor Request und Local Operation Executor fuehren keine Git-Statuspruefung aus.
 
 Unbekannte Capability IDs fuehren zu einem harten Fehler. Es gibt keine Fallbacks und keine impliziten Shell Commands.
 
@@ -327,14 +327,55 @@ Command Plan
     + Command Session
     + Execution Admission
     -> Executor Request
-    -> spaeterer Local Operation Executor
+    -> Local Operation Executor
 ```
 
 Die Phase erzeugt nur dann ein Request-Objekt, wenn die Admission exakt zu Command Plan und Command Session passt, `status = eligible-but-disabled`, `executionEligible = true` und `executionAdmitted = false` enthaelt und das aktuelle Session-Item weiterhin `ready` ist. Zulaessig sind nur lokale Automation-Items mit `executionLocation = local`, `executionMode = automatic` und `program = local-operation`; Human Commands, Remote-Ausfuehrung, SSH, SCP und aktivierte Plan-Ausfuehrung werden kontrolliert abgelehnt.
 
-Das Ergebnis ist deterministisch, hat `executorRequestType = deployment-executor-request` und bleibt `status = disabled`. Es enthaelt `program`, `arguments`, `renderedCommand`, `workingDirectory`, eine leere beziehungsweise strukturierte Umgebung, eine deaktivierte Execution Policy und die erwarteten Event-Typen `automation-started` und `automation-result`.
+Das Ergebnis ist deterministisch, hat `executorRequestType = deployment-executor-request` und bleibt `status = disabled`. Es enthaelt `operationType`, `program`, `arguments`, `renderedCommand`, `workingDirectory`, eine leere beziehungsweise strukturierte Umgebung, strukturierte `operation`-Daten, eine deaktivierte Execution Policy und die erwarteten Event-Typen `automation-started` und `automation-result`.
 
-Executor Request startet keine Prozesse, baut kein Netzwerk auf, erzeugt keine Events, wendet keine Events an, veraendert keine Command Session und fuehrt kein Deployment aus. Secret-artige Inhalte in den validierten Eingaben werden abgelehnt. Der echte ausfuehrende Baustein bleibt ein spaeterer Local Operation Executor.
+Executor Request startet keine Prozesse, baut kein Netzwerk auf, erzeugt keine Events, wendet keine Events an, veraendert keine Command Session und fuehrt kein Deployment aus. Secret-artige Inhalte in den validierten Eingaben werden abgelehnt.
+
+## Local Operation Executor
+
+Der Local Operation Executor V1 ist der erste aktiv ausfuehrende Baustein. Er verarbeitet ausschliesslich validierte `deployment-executor-request`-Objekte und dispatcht nur ueber eine feste Allowlist.
+
+```text
+Executor Request
+    -> Local Operation Executor
+    -> Executor Result
+    -> Automation Event Builder
+    -> Command Session Event
+```
+
+Akzeptiert werden nur Requests mit `status = disabled`, `actor = automation`, `executionLocation = local`, `executionMode = automatic`, `program = local-operation` und explizitem `operationType`. Der Executor leitet die Operation niemals aus `commandId`, `arguments`, `renderedCommand` oder `diagnostic` ab.
+
+V1 unterstuetzt genau zwei Operationen: `source.validate` prueft read-only, ob ein expliziter Quellpfad existiert und ein Verzeichnis ist. `archive.create` erzeugt ein ZIP-Archiv aus einem expliziten Quellverzeichnis an einem expliziten, noch nicht vorhandenen Artefaktpfad. Der Artefaktpfad muss ausserhalb des Quellverzeichnisses liegen; bestehende Archive werden nicht ueberschrieben.
+
+Archivierung schliesst mindestens `.env`, `.env.*`, `.git`, `.git/**`, `*.key`, `*.pem`, `id_rsa` und `id_ed25519` aus. Secret-artige Eingaben werden abgelehnt und nicht in stdout, stderr oder Diagnose ausgegeben.
+
+Das Ergebnis ist ein neues `deployment-executor-result` mit Status `completed`, `failed` oder `rejected` und der unveraenderten `sessionId` aus dem Executor Request. Validierungs- und Sicherheitsfehler ergeben `rejected`, sofern der Request strukturell verarbeitbar ist; technische Fehler nach Beginn einer Operation ergeben `failed`. Der Executor erzeugt keine Session-Events, wendet keine Events an, mutiert keine Command Session, verwendet kein Netzwerk und fuehrt keine generischen Programme oder Shell-Kommandos aus.
+
+## Automation Event Builder
+
+Der Automation Event Builder bildet den Rueckweg vom Local Operation Executor in das bestehende Command-Session-Eventmodell. Er erzeugt genau ein Event-Dokument und wendet es nicht auf die Session an.
+
+```text
+Command Session
+    + Executor Request
+    -> automation-started
+
+Command Session
+    + Executor Request
+    + Executor Result
+    -> automation-result
+```
+
+`build-automation-started-event` prueft, dass Session und Executor Request zur selben startbereiten lokalen Automation gehoeren, dass die Session nicht terminal ist und dass fuer das Item noch kein Automation-Start oder Automation-Result vorliegt. `build-automation-result-event` verlangt eine laufende Automation mit genau einem passenden Start-Event, demselben Request, demselben Result-Ziel, identischer `sessionId` in Command Session, Executor Request und Executor Result sowie noch keinem Result-Event.
+
+Executor-Result-Status `completed` wird als erfolgreiches `automation-result` modelliert. `failed` und `rejected` werden fuer das bestehende Session-Statusmodell als fehlgeschlagenes `automation-result` erzeugt; der urspruengliche Status bleibt im Event unter `resultStatus` unterscheidbar. Artefakte werden strukturiert uebernommen, stdout/stderr, freie Request-Daten, Environment-Daten, `renderedCommand` und Secret-artige Inhalte werden nicht in Eventfelder uebernommen.
+
+Der Zeitstempel wird explizit vom Aufrufer geliefert und nach UTC normalisiert. Der Builder verwendet keine versteckte Uhr, startet keine Prozesse, erzeugt kein Netzwerk, ruft keinen Executor auf und veraendert keine Command Session.
 
 ## Human Gates
 

@@ -28,7 +28,8 @@ Analyzer
     -> Command Session
     -> Execution Admission
     -> Executor Request
-    -> spaeterer Executor
+    -> Local Operation Executor
+    -> spaetere Orchestrierung
 ```
 
 Der Analyzer ermittelt Aenderungen und Deployment-Entscheidungen. Der Execution Plan Builder uebersetzt dieses Ergebnis in stabile, maschinenlesbare Schritte mit `capabilityId`. Der Capability Resolver ist eine pure Transformation: Er veraendert den uebergebenen unresolved Plan nicht, sondern erzeugt ein neues Resolved Execution Plan-Objekt mit konkreten Anzeigeinformationen wie `displayCommand`, Ausfuehrungsmodus, Risikostufe, Freigabepflicht, Validierungsregeln und Fortsetzungsregeln. Ein spaeterer Executor darf den resolved Plan nur schrittweise verarbeiten und muss an Human- und Review-Gates verbindlich pausieren.
@@ -59,7 +60,9 @@ Command Session trennt den Command Plan vom spaeteren Laufzeitstatus. Sie erzeug
 
 Execution Admission ist die letzte analytische Sicherheitsbarriere vor einem spaeteren Local Executor. Sie liest Command Plan und Command Session, validiert zuerst die vollstaendige Plan-/Session-Konsistenz und Event-History, bewertet danach ausschliesslich `currentItemId` und erzeugt eine deterministische Zulassungsentscheidung. In V1 kann lokale Automation nur `eligible-but-disabled` werden; `admitted` wird erst mit einem spaeteren Executor und expliziter Ausfuehrungsfreigabe eingefuehrt.
 
-Executor Request ueberfuehrt eine freigegebene, aber weiterhin deaktivierte Execution Admission in einen validierten Vertrag fuer einen spaeteren Local Operation Executor. Der Request bleibt `status = disabled`, erlaubt keinen Prozessstart, keinen Netzwerkzugriff und keine Remote-Ausfuehrung und veraendert weder Command Session noch Events.
+Executor Request ueberfuehrt eine freigegebene, aber weiterhin deaktivierte Execution Admission in einen validierten Vertrag fuer den Local Operation Executor. Der Request bleibt `status = disabled`, enthaelt `operationType` und strukturierte `operation`-Daten und veraendert weder Command Session noch Events.
+
+Local Operation Executor V1 verarbeitet ausschliesslich solche Executor Requests und fuehrt nur explizit erlaubte lokale Operationen aus. Unterstuetzt sind `source.validate` und `archive.create`; SSH, SCP, generische Shell-Ausfuehrung, Netzwerkzugriff, Session-Mutation und Event-Erzeugung bleiben ausgeschlossen.
 
 ## Unterstuetzter Umfang in Version 0.1
 
@@ -81,7 +84,8 @@ Executor Request ueberfuehrt eine freigegebene, aber weiterhin deaktivierte Exec
 - Command Generation mit strukturiertem Command Model und `executionAllowed = false`
 - Command Session mit eventbasiertem Statusmodell ohne Ausfuehrung oder automatische Freigabe
 - Execution Admission als analytische Zulassungsschicht mit `eligible-but-disabled`, ohne Prozessstart und ohne Netzwerkzugriff
-- Executor Request als deaktivierter Vertrag fuer lokale Automation, ohne Executor-Ausfuehrung
+- Executor Request als deaktivierter Vertrag fuer lokale Automation
+- Local Operation Executor V1 fuer `source.validate` und `archive.create` mit enger Allowlist
 - Agent-, Human- und Review-Schritte unterscheiden
 - verbindliche Pausepunkte, Abhaengigkeiten und Validierungsanforderungen modellieren
 - Migrationen als High-Risk-Schritte mit Safety Review, `migrate:status` und ausdruecklicher Freigabe modellieren
@@ -274,7 +278,7 @@ In V1 sind `local-operation`, `ssh` und `scp` als Programmart unterstuetzt. `loc
 
 Die Command Session verwaltet nur Zustand. Items entstehen aus Command-Plan-Commands und Human Gates. Statuswerte sind `created`, `waiting`, `in-progress`, `completed`, `blocked`, `failed` und `cancelled`; einzelne Items verwenden `pending`, `ready`, `waiting-for-human`, `running`, `completed`, `failed`, `skipped`, `blocked` und `cancelled`.
 
-Zustandsaenderungen erfolgen ausschliesslich ueber Events mit stabiler `eventId`, zum Beispiel `automation-started`, `automation-result`, `human-decision-submitted`, `human-command-started`, `human-command-result`, `review-result` oder `session-cancelled`. Automation-Items benoetigen ein Start-Event und danach ein strukturiertes Result-Event; dabei wird kein Prozess gestartet. Human Gates uebernehmen `sequence` und `dependsOn` aus Strategy beziehungsweise Command Plan und werden erst aktiv, wenn ihre modellierten Abhaengigkeiten abgeschlossen sind. Human Commands benoetigen ebenfalls ein Start-Event und danach ein Result-Event; der technische Erfolg wird ausschliesslich ueber `exitStatus = 0` bewertet. Sobald mindestens ein Item `running` ist, steht die Session auf `in-progress`. Es gibt keine automatische Freigabe, keine automatische Erfolgserkennung aus Freitext, keine Zeitstempel und keinen Retry. Der Executor bleibt ein spaeterer Baustein.
+Zustandsaenderungen erfolgen ausschliesslich ueber Events mit stabiler `eventId`, zum Beispiel `automation-started`, `automation-result`, `human-decision-submitted`, `human-command-started`, `human-command-result`, `review-result` oder `session-cancelled`. Automation-Items benoetigen ein Start-Event und danach ein strukturiertes Result-Event; die Command Session startet dabei keinen Prozess. Human Gates uebernehmen `sequence` und `dependsOn` aus Strategy beziehungsweise Command Plan und werden erst aktiv, wenn ihre modellierten Abhaengigkeiten abgeschlossen sind. Human Commands benoetigen ebenfalls ein Start-Event und danach ein Result-Event; der technische Erfolg wird ausschliesslich ueber `exitStatus = 0` bewertet. Sobald mindestens ein Item `running` ist, steht die Session auf `in-progress`. Es gibt keine automatische Freigabe, keine automatische Erfolgserkennung aus Freitext, keine versteckten Zeitstempel und keinen Retry.
 
 ## Execution Admission bewerten
 
@@ -303,7 +307,42 @@ Human Decisions und Human Commands ergeben `requires-human`, Review Items ergebe
 
 Der Executor Request liest Command Plan, Command Session und Execution Admission und validiert, dass alle drei Artefakte dasselbe aktuelle lokale Automation-Item referenzieren. Er wird nur fuer `eligible-but-disabled` mit `executionEligible = true` und `executionAdmitted = false` erzeugt. Human Commands, Remote-Ausfuehrung, SSH, SCP, aktivierte Plan-Ausfuehrung, nicht mehr bereite Items, inkonsistente IDs und secret-artige Inhalte werden kontrolliert abgelehnt.
 
-Das Ergebnis ist ein deterministisches JSON-Objekt mit `executorRequestType = deployment-executor-request` und `status = disabled`. Es beschreibt den spaeter erwarteten `local-operation`-Vertrag inklusive `expectedEvents`, startet aber keinen Prozess, erzeugt keine Events, mutiert keine Session, verwendet kein Netzwerk und fuehrt kein Deployment aus.
+Das Ergebnis ist ein deterministisches JSON-Objekt mit `executorRequestType = deployment-executor-request` und `status = disabled`. Es beschreibt den `local-operation`-Vertrag inklusive `operationType`, strukturierter `operation`-Daten und `expectedEvents`, startet aber keinen Prozess, erzeugt keine Events, mutiert keine Session, verwendet kein Netzwerk und fuehrt kein Deployment aus.
+
+## Lokale Operation ausfuehren
+
+```powershell
+.\tools\deployment-engine\bin\deployment-engine.ps1 execute-local-operation `
+    -ExecutorRequestPath (Join-Path $runPath 'decisions\executor-request.json') `
+    -OutputPath (Join-Path $runPath 'decisions\executor-result.json')
+```
+
+V1 akzeptiert nur `deployment-executor-request` mit `status = disabled`, `actor = automation`, `executionLocation = local`, `executionMode = automatic`, `program = local-operation` und explizitem `operationType`. `source.validate` prueft ein vorhandenes lokales Quellverzeichnis read-only. `archive.create` erzeugt ein ZIP-Archiv aus einem expliziten Quellverzeichnis an einem expliziten, noch nicht vorhandenen Artefaktpfad.
+
+Archivierung schliesst mindestens `.env`, `.env.*`, `.git`, Schluesseldateien und typische private Key-Dateinamen aus. Bestehende Archive werden nicht ueberschrieben. Das Ergebnis ist ein `deployment-executor-result` mit `completed`, `failed` oder `rejected` und enthaelt immer die unveraenderte `sessionId` aus dem Executor Request; auch `failed` und `rejected` werden als parsebares JSON ausgegeben, sofern der Request strukturell verarbeitbar ist.
+
+## Automation Events erzeugen
+
+```powershell
+.\tools\deployment-engine\bin\deployment-engine.ps1 build-automation-started-event `
+    -CommandSessionPath (Join-Path $runPath 'decisions\command-session.json') `
+    -ExecutorRequestPath (Join-Path $runPath 'decisions\executor-request.json') `
+    -Timestamp '2026-07-27T12:00:00Z' `
+    -OutputPath (Join-Path $runPath 'input\automation-started.json')
+```
+
+```powershell
+.\tools\deployment-engine\bin\deployment-engine.ps1 build-automation-result-event `
+    -CommandSessionPath (Join-Path $runPath 'decisions\command-session.running.json') `
+    -ExecutorRequestPath (Join-Path $runPath 'decisions\executor-request.json') `
+    -ExecutorResultPath (Join-Path $runPath 'decisions\executor-result.json') `
+    -Timestamp '2026-07-27T12:00:01Z' `
+    -OutputPath (Join-Path $runPath 'input\automation-result.json')
+```
+
+Der Automation Event Builder erzeugt genau ein Command-Session-Event und wendet es nicht an. Der Started Builder prueft eine startbereite lokale Automation und erzeugt `automation-started`. Der Result Builder prueft eine laufende lokale Automation, denselben Executor Request und ein `deployment-executor-result`; dabei muessen Command Session, Executor Request und Executor Result dieselbe `sessionId` tragen. `completed` bleibt erfolgreich, `failed` und `rejected` werden fuer das bestehende Session-Modell als fehlgeschlagenes `automation-result` abgebildet, wobei der urspruengliche Result-Status als `resultStatus` erhalten bleibt.
+
+Der Zeitstempel wird immer explizit uebergeben und nach UTC normalisiert. Der Builder uebernimmt keine freien Request-Daten, keine Environment-Daten, kein `renderedCommand`, kein stdout/stderr und keine Secret-artigen Inhalte in Eventfelder. Die Session wird erst durch `update-command-session` mit dem erzeugten Event veraendert.
 
 Exit-Codes:
 

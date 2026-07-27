@@ -113,6 +113,25 @@ function Get-ExecutorRequestSessionItem {
     return $matches[0]
 }
 
+function Resolve-ExecutorRequestOperationType {
+    param([Parameter(Mandatory = $true)][string] $CommandOperationType)
+    switch ($CommandOperationType) {
+        'source.validate' { return 'source.validate' }
+        'source-validate' { return 'source.validate' }
+        'archive.create' { return 'archive.create' }
+        'archive-create' { return 'archive.create' }
+        default { return $CommandOperationType }
+    }
+}
+
+function Get-ExecutorRequestOperation {
+    param([Parameter(Mandatory = $true)][object] $Command)
+    if (Test-ExecutorRequestProperty -Object $Command -Name 'operation') {
+        return Copy-ExecutorRequestObject -Value $Command.operation
+    }
+    return [pscustomobject]@{}
+}
+
 function Resolve-ExecutorRequest {
     param([Parameter(Mandatory = $true)][object] $CommandPlan, [Parameter(Mandatory = $true)][object] $CommandSession, [Parameter(Mandatory = $true)][object] $ExecutionAdmission)
     $plan = Copy-ExecutorRequestObject -Value $CommandPlan
@@ -129,6 +148,7 @@ function Resolve-ExecutorRequest {
     if ($computedJson -ne $providedJson) { throw 'Executor request validation failed: execution admission does not match command plan and command session.' }
     if ([string] $session.currentItemId -ne [string] $admission.currentItemId) { throw 'Executor request validation failed: admission currentItemId does not match command session.' }
     if ([string] $admission.currentItemId -ne [string] $admission.commandId) { throw 'Executor request validation failed: admission commandId must match currentItemId for local automation.' }
+    Assert-ExecutorRequestString -Object $session -Name 'sessionId' -Context 'Command session'
 
     $item = Get-ExecutorRequestSessionItem -CommandSession $session -ItemId ([string] $admission.currentItemId)
     $command = Get-ExecutorRequestCommand -CommandPlan $plan -CommandId ([string] $admission.commandId)
@@ -137,14 +157,17 @@ function Resolve-ExecutorRequest {
     if ($item.status -ne 'ready') { throw "Executor request validation failed: session item '$($item.itemId)' must be ready." }
     if ($item.actor -ne 'automation' -or $command.actor -ne 'automation') { throw 'Executor request validation failed: only automation items are supported.' }
     if ($command.executionLocation -ne 'local' -or $command.executionMode -ne 'automatic' -or $command.program -ne 'local-operation') { throw 'Executor request validation failed: only local automatic local-operation commands are supported.' }
+    $operationType = Resolve-ExecutorRequestOperationType -CommandOperationType ([string] $command.operationType)
+    $operation = Get-ExecutorRequestOperation -Command $command
 
     return [pscustomobject]@{
         schemaVersion = '0.1'
         executorRequestType = 'deployment-executor-request'
         status = 'disabled'
-        sessionId = ''
+        sessionId = [string] $session.sessionId
         itemId = [string] $item.itemId
         commandId = [string] $command.commandId
+        operationType = $operationType
         executorType = 'local-operation'
         actor = [string] $command.actor
         executionLocation = [string] $command.executionLocation
@@ -154,6 +177,7 @@ function Resolve-ExecutorRequest {
         workingDirectory = [string] $command.workingDirectory
         arguments = @($command.arguments | ForEach-Object { [string] $_ })
         environment = Copy-ExecutorRequestObject -Value $command.environment
+        operation = $operation
         executionPolicy = [pscustomobject]@{
             processStartAllowed = $false
             networkAccessAllowed = $false
