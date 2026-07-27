@@ -26,6 +26,7 @@ Analyzer
     -> Deployment Strategy
     -> Command Generation
     -> Command Session
+    -> Execution Admission
     -> spaeterer Executor
 ```
 
@@ -55,6 +56,8 @@ Command Generation erzeugt aus Resolved Execution Plan und Deployment Strategy e
 
 Command Session trennt den Command Plan vom spaeteren Laufzeitstatus. Sie erzeugt einen deterministischen Session-Zustand, verarbeitet ausschliesslich strukturierte Events und fuehrt keine Commands aus.
 
+Execution Admission ist die letzte analytische Sicherheitsbarriere vor einem spaeteren Local Executor. Sie liest Command Plan und Command Session, validiert zuerst die vollstaendige Plan-/Session-Konsistenz und Event-History, bewertet danach ausschliesslich `currentItemId` und erzeugt eine deterministische Zulassungsentscheidung. In V1 kann lokale Automation nur `eligible-but-disabled` werden; `admitted` wird erst mit einem spaeteren Executor und expliziter Ausfuehrungsfreigabe eingefuehrt.
+
 ## Unterstuetzter Umfang in Version 0.1
 
 - Projektmanifest lesen und validieren
@@ -74,6 +77,7 @@ Command Session trennt den Command Plan vom spaeteren Laufzeitstatus. Sie erzeug
 - Deployment Strategy mit Actor-Modell `automation`, `human-decision`, `human-command` und `review`
 - Command Generation mit strukturiertem Command Model und `executionAllowed = false`
 - Command Session mit eventbasiertem Statusmodell ohne Ausfuehrung oder automatische Freigabe
+- Execution Admission als analytische Zulassungsschicht mit `eligible-but-disabled`, ohne Prozessstart und ohne Netzwerkzugriff
 - Agent-, Human- und Review-Schritte unterscheiden
 - verbindliche Pausepunkte, Abhaengigkeiten und Validierungsanforderungen modellieren
 - Migrationen als High-Risk-Schritte mit Safety Review, `migrate:status` und ausdruecklicher Freigabe modellieren
@@ -267,6 +271,21 @@ In V1 sind `local-operation`, `ssh` und `scp` als Programmart unterstuetzt. `loc
 Die Command Session verwaltet nur Zustand. Items entstehen aus Command-Plan-Commands und Human Gates. Statuswerte sind `created`, `waiting`, `in-progress`, `completed`, `blocked`, `failed` und `cancelled`; einzelne Items verwenden `pending`, `ready`, `waiting-for-human`, `running`, `completed`, `failed`, `skipped`, `blocked` und `cancelled`.
 
 Zustandsaenderungen erfolgen ausschliesslich ueber Events mit stabiler `eventId`, zum Beispiel `automation-started`, `automation-result`, `human-decision-submitted`, `human-command-started`, `human-command-result`, `review-result` oder `session-cancelled`. Automation-Items benoetigen ein Start-Event und danach ein strukturiertes Result-Event; dabei wird kein Prozess gestartet. Human Gates uebernehmen `sequence` und `dependsOn` aus Strategy beziehungsweise Command Plan und werden erst aktiv, wenn ihre modellierten Abhaengigkeiten abgeschlossen sind. Human Commands benoetigen ebenfalls ein Start-Event und danach ein Result-Event; der technische Erfolg wird ausschliesslich ueber `exitStatus = 0` bewertet. Sobald mindestens ein Item `running` ist, steht die Session auf `in-progress`. Es gibt keine automatische Freigabe, keine automatische Erfolgserkennung aus Freitext, keine Zeitstempel und keinen Retry. Der Executor bleibt ein spaeterer Baustein.
+
+## Execution Admission bewerten
+
+```powershell
+.\tools\deployment-engine\bin\deployment-engine.ps1 evaluate-execution-admission `
+    -CommandPlanPath (Join-Path $runPath 'decisions\command-plan.json') `
+    -CommandSessionPath (Join-Path $runPath 'decisions\command-session.json') `
+    -OutputPath (Join-Path $runPath 'decisions\execution-admission.json')
+```
+
+Execution Admission prueft den gesamten Command Plan und die gesamte Command Session gegeneinander und bewertet erst danach das aktuelle `currentItemId`. Alle Session-Items muessen ihren Plan-Urspruengen entsprechen; die Event-History muss actor-spezifisch zu Start-, Result-, Decision- und Review-Status passen. Human Approvals werden aus Human Gates und dem Dependency-Graph ermittelt, nicht aus einer fest codierten Gate-ID.
+
+In V1 wird ausschliesslich lokale Automation mit `actor = automation`, `executionLocation = local`, `executionMode = automatic`, `program = local-operation` und Item-Status `ready` als `eligible-but-disabled` markiert. `executionEligible = true` bedeutet dabei nur fachliche Eignung fuer einen spaeteren lokalen Executor; `executionAdmitted` bleibt immer `false`.
+
+Human Decisions und Human Commands ergeben `requires-human`, Review Items ergeben `requires-review`. Remote-Ausfuehrung, SSH, SCP und lokale-zu-remote Schritte werden niemals automatisch zugelassen. Die Ausgabe enthaelt eine konstante `executionPolicy` mit `productiveExecutionAllowed = false`, `processStartAllowed = false`, `networkAccessAllowed = false` und `remoteExecutionAllowed = false`. Die Phase erzeugt keine Events, startet keine Prozesse, baut kein Netzwerk auf, veraendert keine Session und fuehrt kein Deployment aus. Der Status `admitted` wird erst mit dem spaeteren Executor eingefuehrt.
 
 Exit-Codes:
 

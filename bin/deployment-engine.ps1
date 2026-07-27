@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0, Mandatory = $true)]
-    [ValidateSet('plan', 'discover-tools', 'remote-discovery-plan', 'resolve-remote-discovery', 'assess-tool-inventories', 'evaluate-adapter-eligibility', 'select-adapter', 'build-deployment-strategy', 'generate-commands', 'create-command-session', 'update-command-session')]
+    [ValidateSet('plan', 'discover-tools', 'remote-discovery-plan', 'resolve-remote-discovery', 'assess-tool-inventories', 'evaluate-adapter-eligibility', 'select-adapter', 'build-deployment-strategy', 'generate-commands', 'create-command-session', 'update-command-session', 'evaluate-execution-admission')]
     [string] $Command,
 
     [string] $Analysis,
@@ -225,6 +225,24 @@ switch ($Command) {
 
         $sessionPath = Join-Path -Path $engineRoot -ChildPath 'src/ps1/CommandSession.ps1'
         & $sessionPath -Operation Update -CommandSessionPath $CommandSessionPath -SessionEventPath $SessionEventPath -Format Json -OutputPath $OutputPath
+        exit 0
+    }
+    'evaluate-execution-admission' {
+        if ([string]::IsNullOrWhiteSpace($Format)) {
+            $Format = 'Json'
+        }
+        if ($Format -ne 'Json') {
+            throw "evaluate-execution-admission only supports -Format Json."
+        }
+        if ([string]::IsNullOrWhiteSpace($CommandPlanPath)) {
+            throw "Missing required parameter for 'evaluate-execution-admission': -CommandPlanPath"
+        }
+        if ([string]::IsNullOrWhiteSpace($CommandSessionPath)) {
+            throw "Missing required parameter for 'evaluate-execution-admission': -CommandSessionPath"
+        }
+
+        $admissionPath = Join-Path -Path $engineRoot -ChildPath 'src/ps1/Evaluate-ExecutionAdmission.ps1'
+        & $admissionPath -CommandPlanPath $CommandPlanPath -CommandSessionPath $CommandSessionPath -Format Json -OutputPath $OutputPath
         exit 0
     }
 }

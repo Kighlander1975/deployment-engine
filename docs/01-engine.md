@@ -1,6 +1,6 @@
 # Engine Pipeline
 
-Die Pipeline der Version `0.1` ist bewusst in Analyse, Planerzeugung, Capability-Aufloesung, Tool Discovery, Adapterentscheidung, Deployment Strategy, Command Generation, Command Session und spaetere Ausfuehrung getrennt.
+Die Pipeline der Version `0.1` ist bewusst in Analyse, Planerzeugung, Capability-Aufloesung, Tool Discovery, Adapterentscheidung, Deployment Strategy, Command Generation, Command Session, Execution Admission und spaetere Ausfuehrung getrennt.
 
 ## Project Detection
 
@@ -65,11 +65,11 @@ Der Resolver fuehrt keine Aktionen aus. Er trifft keine automatische Adapterwahl
 
 Deployment-Laufzeitdaten und erzeugte Artefakte werden ausserhalb des Deployment-Engine-Repositories und des zu deployenden Projekt-Repositories abgelegt. Jeder Deployment-Lauf erhaelt ein eigenes externes Run-Verzeichnis.
 
-Spaetere Laufdaten koennen beispielsweise Inventare, Assessments, Entscheidungen, Strategien, Command Plans, Command Sessions, Archive, Logs und Reports umfassen. Adapter Eligibility Evaluation, Adapter Selection, Deployment Strategy, Command Generation und Command Session schreiben weiterhin nur dann eine Datei, wenn explizit `-OutputPath` uebergeben wurde.
+Spaetere Laufdaten koennen beispielsweise Inventare, Assessments, Entscheidungen, Strategien, Command Plans, Command Sessions, Execution Admissions, Archive, Logs und Reports umfassen. Adapter Eligibility Evaluation, Adapter Selection, Deployment Strategy, Command Generation, Command Session und Execution Admission schreiben weiterhin nur dann eine Datei, wenn explizit `-OutputPath` uebergeben wurde.
 
 Vor einem spaeteren automatischen Deployment wird der Arbeitsbaum des zu deployenden Projekts geprueft. In V1 blockieren sichtbare Aenderungen aus `git status --porcelain` den automatischen Deploy.
 
-Runtime Directory Management und Clean-Tree Gate sind noch nicht implementiert. Beide Architekturbausteine muessen vor Archivierung oder Executor umgesetzt werden. Die aktuelle Adapter Eligibility Evaluation, Adapter Selection, Deployment Strategy, Command Generation und Command Session fuehren keine Git-Statuspruefung aus.
+Runtime Directory Management und Clean-Tree Gate sind noch nicht implementiert. Beide Architekturbausteine muessen vor Archivierung oder Executor umgesetzt werden. Die aktuelle Adapter Eligibility Evaluation, Adapter Selection, Deployment Strategy, Command Generation, Command Session und Execution Admission fuehren keine Git-Statuspruefung aus.
 
 Unbekannte Capability IDs fuehren zu einem harten Fehler. Es gibt keine Fallbacks und keine impliziten Shell Commands.
 
@@ -284,6 +284,7 @@ Die Command Session ist eine zustandsverwaltende Schicht nach dem Command Plan u
 Command Plan
     -> Command Session
     -> spaetere Human Interaction
+    -> Execution Admission
     -> spaeterer Executor
 ```
 
@@ -292,6 +293,29 @@ Die Session trennt Plan und Laufzeitstatus. Sie liest einen validierten Command 
 Session-Statuswerte sind `created`, `waiting`, `in-progress`, `completed`, `blocked`, `failed` und `cancelled`. Item-Statuswerte sind `pending`, `ready`, `waiting-for-human`, `running`, `completed`, `failed`, `skipped`, `blocked` und `cancelled`. Lokale Automation darf hoechstens ueber `automation-started` und `automation-result` von `ready` nach `running` und danach nach `completed` oder `failed` wechseln; dabei wird kein Prozess gestartet. Human Commands wechseln erst durch ein `human-command-started` Event nach `running` und danach durch ein `human-command-result` Event nach `completed` oder `failed`. Sobald mindestens ein Item `running` ist, steht die Session auf `in-progress`.
 
 Events benoetigen eine stabile vom Aufrufer gelieferte `eventId`. Doppelte Event-IDs werden abgelehnt. Human Gates uebernehmen `sequence` und `dependsOn` aus Strategy beziehungsweise Command Plan; das zentrale Deployment-Approval wird erst `waiting-for-human`, wenn seine modellierten Abhaengigkeiten abgeschlossen sind. Entscheidungen werden nur ueber `human-decision-submitted` verarbeitet; `approved` erlaubt Fortsetzung, `rejected` beendet die Session kontrolliert. Fuer Human-Command-Ergebnisse ist ausschliesslich `exitStatus` technisch massgeblich; stdout und stderr werden strukturiert gespeichert, aber nicht als Freitext-Erfolgsheuristik interpretiert. Review-Ergebnisse kennen `approved`, `rejected` und `inconclusive`. Retry, Parallelisierung, Persistenzdatenbank und Executor sind nicht Teil von V1.
+
+## Execution Admission
+
+Execution Admission ist eine rein analytische Zulassungsschicht nach Command Plan und Command Session und vor einem spaeteren Local Executor.
+
+```text
+Command Plan
+    + Command Session
+    -> Execution Admission
+    -> spaeterer Local Executor
+```
+
+Die Phase validiert zuerst den gesamten Command Plan, die gesamte Command Session, alle Plan-/Session-Item-Zuordnungen und die Event-History. Erst wenn diese globale Sicherheitsvalidierung erfolgreich ist, bewertet sie ausschliesslich das aktuelle `CommandSession.currentItemId`. Sie prueft Uebereinstimmung, offene Abhaengigkeiten, Session-Terminalzustaende, Actor, Ausfuehrungsort, Ausfuehrungsmodus und Programmart. Sie waehlt kein anderes Item aus, erzeugt keine Events, setzt kein Item auf `running` oder `completed` und veraendert die Session nicht.
+
+Das Admission-Statusmodell umfasst `eligible-but-disabled`, `requires-human`, `requires-review`, `not-ready`, `blocked`, `failed`, `cancelled`, `completed` und `inconsistent`. Der Status `admitted` wird in V1 nicht verwendet; er wird erst mit einem spaeteren Executor und expliziter Ausfuehrungsfreigabe eingefuehrt.
+
+Die Event-History ist Teil der Sicherheitsvalidierung: Automation und Human Commands benoetigen die passende Start-/Result-Reihenfolge, Human Decisions eine erlaubte Entscheidung und Reviews ein modelliertes Review-Ergebnis. Die gespeicherten Item-Status muessen actor-spezifisch durch diese History und die strukturierten Item-Daten belegt sein. Human Approvals werden aus Human Gates und dem Dependency-Graph ermittelt, nicht aus einer fest codierten Gate-ID.
+
+Lokale Automation kann nur dann `eligible-but-disabled` werden, wenn `actor = automation`, `executionLocation = local`, `executionMode = automatic`, `program = local-operation`, das Item `ready` ist und die modellierten Abhaengigkeiten abgeschlossen sind. Dann ist `executionEligible = true`, aber `executionAdmitted = false`, weil Command Generation weiterhin `executionAllowed = false`, `automaticExecutionAllowed = false` und `executionPermitted = false` liefert.
+
+Human Commands und Human Decisions ergeben `requires-human`; Review Items ergeben `requires-review`. SSH-, SCP-, Remote- und Local-to-Remote-Eintraege werden niemals automatisch zugelassen und bleiben Copy-and-Run beziehungsweise Human Interaction. Der Handoff beschreibt nur den erwarteten naechsten Event-Typ, etwa `automation-started` und `automation-result` fuer spaetere lokale Automation oder `human-command-started` und `human-command-result` fuer manuelle Commands.
+
+Jedes Ergebnis enthaelt eine konstante Execution Policy mit `productiveExecutionAllowed = false`, `processStartAllowed = false`, `networkAccessAllowed = false` und `remoteExecutionAllowed = false`. Execution Admission startet keine Prozesse, baut keine Netzwerkverbindungen auf, archiviert nichts, uebertraegt keine Dateien, liest keine Umgebungsvariablen und fuehrt kein Deployment aus.
 
 ## Human Gates
 
