@@ -24,6 +24,7 @@ Analyzer
     -> Adapter Eligibility Evaluation
     -> Adapter Selection
     -> Deployment Strategy
+    -> Command Generation
     -> spaeterer Executor
 ```
 
@@ -49,6 +50,8 @@ Adapter Selection liest ausschliesslich das Eligibility-Ergebnis und waehlt dete
 
 Deployment Strategy kombiniert den Resolved Execution Plan mit der Adapter Selection zu einem fachlichen Ablauf fuer spaetere Command Generation. Sie beschreibt Operationen, Akteure, Orte, Human Gates und Rueckmeldeanforderungen, erzeugt aber keine konkreten Shell-, SSH- oder SCP-Kommandos und fuehrt nichts aus.
 
+Command Generation erzeugt aus Resolved Execution Plan und Deployment Strategy einen strukturierten Command Plan. `program` und `arguments` sind die fuehrenden Daten; `renderedCommand` ist nur eine deterministische Darstellung zum Kopieren. Die Phase fuehrt nichts aus und erlaubt keine automatische Ausfuehrung.
+
 ## Unterstuetzter Umfang in Version 0.1
 
 - Projektmanifest lesen und validieren
@@ -66,6 +69,7 @@ Deployment Strategy kombiniert den Resolved Execution Plan mit der Adapter Selec
 - Adapter Eligibility Evaluation fuer `archive.zip` und `archive.tar` ohne finale Adapterauswahl
 - Adapter Selection fuer `archive.zip` und `archive.tar` nach zentraler Adapter-Prioritaet
 - Deployment Strategy mit Actor-Modell `automation`, `human-decision`, `human-command` und `review`
+- Command Generation mit strukturiertem Command Model und `executionAllowed = false`
 - Agent-, Human- und Review-Schritte unterscheiden
 - verbindliche Pausepunkte, Abhaengigkeiten und Validierungsanforderungen modellieren
 - Migrationen als High-Risk-Schritte mit Safety Review, `migrate:status` und ausdruecklicher Freigabe modellieren
@@ -227,6 +231,19 @@ Das Ergebnis enthaelt `selectedAdapterId` ausschliesslich in der Selection-Ausga
 Die Deployment Strategy ist eine reine Planungsphase nach Adapter Selection und vor spaeterer Command Generation. Sie unterscheidet `automation`, `human-decision`, `human-command` und `review`. Lokale automatisierbare Schritte werden als `automation` modelliert. Ein zentrales Deployment-Approval ist ein `human-decision` Gate. SSH- und Upload-nahe Schritte bleiben in V1 `human-command`: Die Strategy markiert nur, dass spaeter ein vollstaendig kopierbarer Befehl erzeugt werden muss; der Benutzer fuehrt ihn aus und liefert strukturierte Rueckmeldung wie Exit-Status, stdout und stderr.
 
 Statuswerte sind `ready`, `incomplete` und `blocked`. Der normale V1-Erfolgsfall ist `ready`, weil eine vorherige Adapter Selection mit `status = selected` erforderlich ist. Bei `incomplete` oder `blocked` aus der Adapter Selection wird keine ausfuehrbare Strategy erzeugt. Die Phase erzeugt keine Commands, fuehrt keine Git-Pruefung aus, legt kein Runtime-Verzeichnis an und startet keinen Executor.
+
+## Command Plan erzeugen
+
+```powershell
+.\tools\deployment-engine\bin\deployment-engine.ps1 generate-commands `
+    -ExecutionPlanPath (Join-Path $runPath 'plans\execution-plan.json') `
+    -DeploymentStrategyPath (Join-Path $runPath 'decisions\deployment-strategy.json') `
+    -OutputPath (Join-Path $runPath 'decisions\command-plan.json')
+```
+
+Der Command Plan beschreibt spaetere Ausfuehrungseinheiten, fuehrt sie aber nicht aus. Jeder Eintrag besitzt `program`, `arguments`, `renderedCommand`, Anzeigeinformationen, Feedback-Anforderungen und Safety-Flags. `program` und `arguments` sind fachlich fuehrend; `renderedCommand` wird nur daraus erzeugt.
+
+In V1 sind `local-operation`, `ssh` und `scp` als Programmart unterstuetzt. `local-operation` ist ein nicht ausfuehrbarer Platzhalter fuer spaetere lokale Automation. SSH- und SCP-Eintraege bleiben `copy-and-run`, `copyable = true` und `executionPermitted = false`; der Benutzer fuehrt sie spaeter manuell aus und liefert Rueckmeldung. Fehlen SSH-Ziel, absoluter Remote-Pfad oder lokaler Artefaktpfad, wird der Command Plan `incomplete` statt Pfade oder Ziele zu erfinden. Target Discovery, Runtime Directory Management und Executor bleiben spaetere Bausteine.
 
 Exit-Codes:
 

@@ -1,6 +1,6 @@
 # Engine Pipeline
 
-Die Pipeline der Version `0.1` ist bewusst in Analyse, Planerzeugung, Capability-Aufloesung, Tool Discovery, Adapterentscheidung, Deployment Strategy und spaetere Ausfuehrung getrennt.
+Die Pipeline der Version `0.1` ist bewusst in Analyse, Planerzeugung, Capability-Aufloesung, Tool Discovery, Adapterentscheidung, Deployment Strategy, Command Generation und spaetere Ausfuehrung getrennt.
 
 ## Project Detection
 
@@ -65,11 +65,11 @@ Der Resolver fuehrt keine Aktionen aus. Er trifft keine automatische Adapterwahl
 
 Deployment-Laufzeitdaten und erzeugte Artefakte werden ausserhalb des Deployment-Engine-Repositories und des zu deployenden Projekt-Repositories abgelegt. Jeder Deployment-Lauf erhaelt ein eigenes externes Run-Verzeichnis.
 
-Spaetere Laufdaten koennen beispielsweise Inventare, Assessments, Entscheidungen, Strategien, Archive, Logs und Reports umfassen. Adapter Eligibility Evaluation, Adapter Selection und Deployment Strategy schreiben weiterhin nur dann eine Datei, wenn explizit `-OutputPath` uebergeben wurde.
+Spaetere Laufdaten koennen beispielsweise Inventare, Assessments, Entscheidungen, Strategien, Command Plans, Archive, Logs und Reports umfassen. Adapter Eligibility Evaluation, Adapter Selection, Deployment Strategy und Command Generation schreiben weiterhin nur dann eine Datei, wenn explizit `-OutputPath` uebergeben wurde.
 
 Vor einem spaeteren automatischen Deployment wird der Arbeitsbaum des zu deployenden Projekts geprueft. In V1 blockieren sichtbare Aenderungen aus `git status --porcelain` den automatischen Deploy.
 
-Runtime Directory Management und Clean-Tree Gate sind noch nicht implementiert. Beide Architekturbausteine muessen vor Archivierung, Command Generation oder Executor umgesetzt werden. Die aktuelle Adapter Eligibility Evaluation, Adapter Selection und Deployment Strategy fuehren keine Git-Statuspruefung aus.
+Runtime Directory Management und Clean-Tree Gate sind noch nicht implementiert. Beide Architekturbausteine muessen vor Archivierung oder Executor umgesetzt werden. Die aktuelle Adapter Eligibility Evaluation, Adapter Selection, Deployment Strategy und Command Generation fuehren keine Git-Statuspruefung aus.
 
 Unbekannte Capability IDs fuehren zu einem harten Fehler. Es gibt keine Fallbacks und keine impliziten Shell Commands.
 
@@ -244,7 +244,7 @@ Die Deployment Strategy ist eine rein analytische Planungsphase nach Adapter Sel
 Resolved Execution Plan
     + Adapter Selection
     -> Deployment Strategy
-    -> spaetere Command Generation
+    -> Command Generation
     -> spaeterer Executor
 ```
 
@@ -255,6 +255,26 @@ Das Statusmodell ist `ready`, `incomplete` und `blocked`. In V1 setzt die Strate
 Das Actor-Modell unterscheidet `automation`, `human-decision`, `human-command` und `review`. Lokale automatisierbare Schritte werden als `automation` mit `commandExecutionMode = automatic` modelliert, sofern keine fachliche Entscheidung erforderlich ist. Das zentrale Deployment-Approval ist ein `human-decision` Gate. SSH- und Upload-nahe Operationen werden in V1 als `human-command` mit `commandExecutionMode = copy-and-run` modelliert; der kopierbare Befehl entsteht erst in einer spaeteren Command-Generation-Phase. Nach Human Commands ist strukturierte Rueckmeldung erforderlich, mindestens Exit-Status, stdout und stderr.
 
 Die V1-Strategie fuer `archive.zip` und `archive.tar` verwendet denselben fachlichen Ablauf: Source-Validierung, Artefaktvorbereitung, Archiverstellung, Deployment-Freigabe, Remote-Release-Verzeichnis, Upload, Extraktion, Applikationsfinalisierung und Review-Verifikation. Unterschiede zwischen ZIP und TAR bleiben auf Adapterformat und spaetere Command Generation begrenzt. Migrationen, Composer-Schritte oder Framework-spezifische Operationen duerfen nur aus dem Resolved Execution Plan abgeleitet werden und werden nicht als freie Commands erfunden.
+
+## Command Generation
+
+Command Generation ist eine rein analytische Transformationsphase nach der Deployment Strategy. Sie liest einen validierten Resolved Execution Plan und eine validierte Deployment Strategy und erzeugt daraus einen strukturierten Command Plan.
+
+```text
+Resolved Execution Plan
+    + Deployment Strategy
+    -> Command Generation
+    -> Command Plan
+    -> spaeterer Executor
+```
+
+Der Command Plan fuehrt nichts aus. Fuer diesen Meilenstein gilt immer `executionAllowed = false` und `automaticExecutionAllowed = false`; diese Werte sind nicht per CLI ueberschreibbar.
+
+Jeder Command-Eintrag beschreibt `program`, `arguments`, `renderedCommand`, Anzeigeinformationen, Feedback-Anforderungen und Safety-Flags. `program` und `arguments` sind die fuehrenden Daten. `renderedCommand` ist nur eine deterministische Darstellung daraus und darf keine fachlichen Zusatzargumente erfinden.
+
+V1 kennt `local-operation`, `ssh` und `scp`. `local-operation` ist kein Betriebssystemprogramm, sondern ein strukturierter Platzhalter fuer spaetere lokale Automation. SSH- und SCP-Eintraege werden ausschliesslich als `copy-and-run` modelliert: copyable, aber `executionPermitted = false`. Es wird keine Verbindung aufgebaut, kein Netzwerkzugriff durchgefuehrt, keine Datei uebertragen und kein Command automatisch bestaetigt.
+
+Remote-Ziele und Pfade werden nicht erfunden. Ein gerenderter SSH- oder SCP-Eintrag entsteht nur, wenn SSH-Ziel, absoluter Remote-Pfad und bei Upload ein lokaler Artefaktpfad eindeutig in den Eingaben vorhanden sind. Fehlen diese Angaben oder sind Remote-Pfade relativ, wird der Command Plan `incomplete`. Target Discovery, Runtime Directory Management, Archivierung und Executor bleiben spaetere Bausteine.
 
 ## Human Gates
 

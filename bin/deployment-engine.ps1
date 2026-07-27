@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0, Mandatory = $true)]
-    [ValidateSet('plan', 'discover-tools', 'remote-discovery-plan', 'resolve-remote-discovery', 'assess-tool-inventories', 'evaluate-adapter-eligibility', 'select-adapter', 'build-deployment-strategy')]
+    [ValidateSet('plan', 'discover-tools', 'remote-discovery-plan', 'resolve-remote-discovery', 'assess-tool-inventories', 'evaluate-adapter-eligibility', 'select-adapter', 'build-deployment-strategy', 'generate-commands')]
     [string] $Command,
 
     [string] $Analysis,
@@ -27,6 +27,8 @@ param(
     [string] $ExecutionPlanPath,
 
     [string] $AdapterSelectionPath,
+
+    [string] $DeploymentStrategyPath,
 
     [string] $Format,
 
@@ -166,6 +168,24 @@ switch ($Command) {
 
         $strategyPath = Join-Path -Path $engineRoot -ChildPath 'src/ps1/Build-DeploymentStrategy.ps1'
         & $strategyPath -ExecutionPlanPath $ExecutionPlanPath -AdapterSelectionPath $AdapterSelectionPath -Format Json -OutputPath $OutputPath
+        exit 0
+    }
+    'generate-commands' {
+        if ([string]::IsNullOrWhiteSpace($Format)) {
+            $Format = 'Json'
+        }
+        if ($Format -ne 'Json') {
+            throw "generate-commands only supports -Format Json."
+        }
+        if ([string]::IsNullOrWhiteSpace($ExecutionPlanPath)) {
+            throw "Missing required parameter for 'generate-commands': -ExecutionPlanPath"
+        }
+        if ([string]::IsNullOrWhiteSpace($DeploymentStrategyPath)) {
+            throw "Missing required parameter for 'generate-commands': -DeploymentStrategyPath"
+        }
+
+        $commandPlanPath = Join-Path -Path $engineRoot -ChildPath 'src/ps1/Build-CommandPlan.ps1'
+        & $commandPlanPath -ExecutionPlanPath $ExecutionPlanPath -DeploymentStrategyPath $DeploymentStrategyPath -Format Json -OutputPath $OutputPath
         exit 0
     }
 }
