@@ -1,6 +1,6 @@
 # Engine Pipeline
 
-Die Pipeline der Version `0.1` ist bewusst in Analyse, Planerzeugung, Capability-Aufloesung, Tool Discovery, Adapterentscheidung, Deployment Strategy, Command Generation, Command Session, Execution Admission, Executor Request, Local Operation Executor und spaetere Orchestrierung getrennt.
+Die Pipeline der Version `0.1` ist bewusst in Analyse, Planerzeugung, Capability-Aufloesung, Tool Discovery, Adapterentscheidung, Runtime Directory Management, Clean-Tree Assessment, Deployment Strategy, Command Generation, Command Session, Execution Admission, Executor Request, Local Operation Executor, Automation Event Builder, Execution Orchestrator und spaetere Remote-/Deployment-Orchestrierung getrennt.
 
 ## Project Detection
 
@@ -65,11 +65,11 @@ Der Resolver fuehrt keine Aktionen aus. Er trifft keine automatische Adapterwahl
 
 Deployment-Laufzeitdaten und erzeugte Artefakte werden ausserhalb des Deployment-Engine-Repositories und des zu deployenden Projekt-Repositories abgelegt. Jeder Deployment-Lauf erhaelt ein eigenes externes Run-Verzeichnis.
 
-Spaetere Laufdaten koennen beispielsweise Inventare, Assessments, Entscheidungen, Strategien, Command Plans, Command Sessions, Execution Admissions, Executor Requests, Executor Results, Archive, Logs und Reports umfassen. Adapter Eligibility Evaluation, Adapter Selection, Deployment Strategy, Command Generation, Command Session, Execution Admission, Executor Request und Local Operation Executor schreiben weiterhin nur dann eine Datei, wenn explizit `-OutputPath` uebergeben wurde.
+Spaetere Laufdaten koennen beispielsweise Inventare, Assessments, Entscheidungen, Strategien, Command Plans, Command Sessions, Execution Admissions, Executor Requests, Executor Results, Archive, Logs und Reports umfassen. Adapter Eligibility Evaluation, Adapter Selection, Runtime Directory Management, Clean-Tree Assessment, Deployment Strategy, Command Generation, Command Session, Execution Admission, Executor Request und Local Operation Executor schreiben weiterhin nur dann eine Datei, wenn explizit `-OutputPath` uebergeben wurde.
 
-Vor einem spaeteren automatischen Deployment wird der Arbeitsbaum des zu deployenden Projekts geprueft. In V1 blockieren sichtbare Aenderungen aus `git status --porcelain` den automatischen Deploy.
+Runtime Directory Management erzeugt unter einem expliziten, bereits vorhandenen Runtime Root ein eindeutiges Run-Verzeichnis mit `artifacts`, `decisions`, `events`, `input`, `inventory`, `logs` und `reports`. Die Ausgabe ist ein Metadatenobjekt mit den erzeugten Pfaden. Die Komponente erzeugt keine Session, fuehrt keine Git-Pruefung aus, startet keinen Executor und fuehrt kein Deployment aus.
 
-Runtime Directory Management und Clean-Tree Gate sind noch nicht implementiert. Beide Architekturbausteine muessen vor einem orchestrierten Deployment umgesetzt werden. Die aktuelle Adapter Eligibility Evaluation, Adapter Selection, Deployment Strategy, Command Generation, Command Session, Execution Admission, Executor Request und Local Operation Executor fuehren keine Git-Statuspruefung aus.
+Clean-Tree Assessment bewertet den Arbeitsbaum des zu deployenden Projekts rein lesend ueber Git. Ein sauberer Arbeitsbaum ergibt `status = clean` und `deploymentAllowed = true`; staged, unstaged oder untracked Aenderungen ergeben `status = dirty`, `deploymentAllowed = false` und strukturierte `changedPaths`. Die Komponente fuehrt kein Staging, keinen Commit, keinen Reset, keine Bereinigung und keine Deployment-Aktion aus.
 
 Unbekannte Capability IDs fuehren zu einem harten Fehler. Es gibt keine Fallbacks und keine impliziten Shell Commands.
 
@@ -377,6 +377,27 @@ Executor-Result-Status `completed` wird als erfolgreiches `automation-result` mo
 
 Der Zeitstempel wird explizit vom Aufrufer geliefert und nach UTC normalisiert. Der Builder verwendet keine versteckte Uhr, startet keine Prozesse, erzeugt kein Netzwerk, ruft keinen Executor auf und veraendert keine Command Session.
 
+## Execution Orchestrator V1
+
+Der lokale Execution Orchestrator V1 koordiniert bestehende Bausteine fuer einen frischen lokalen Lauf. Er erzeugt ein Runtime-Verzeichnis, speichert den unveraenderten Eingabe-Command-Plan unter `input/command-plan.json`, bewertet den Source-Repository-Zustand ueber Clean-Tree Assessment und erstellt nur bei `deploymentAllowed = true` eine Command Session.
+
+```text
+Runtime Directory
+    -> Clean-Tree Assessment
+    -> Command Session
+    -> Execution Admission
+    -> Executor Request
+    -> automation-started Event
+    -> Command Session Update
+    -> Local Operation Executor
+    -> automation-result Event
+    -> Command Session Update
+```
+
+Bei `dirty` Repository endet der Lauf mit `blocked`, ohne Session, Executor Request, lokale Operation oder Archiv. Bei `requires-human` oder `requires-review` pausiert der Lauf mit `waiting-for-human`; der Orchestrator erzeugt keine Human Decisions, keine Human-Command-Resultate und keine Review-Ergebnisse. Terminale Session-Zustaende `completed`, `failed`, `blocked` und `cancelled` beenden die Schleife.
+
+Der Orchestrator erzeugt keine Executor Requests selbst, veraendert keine Session direkt und manipuliert keine Event-History. Er erzeugt UTC-Zeitstempel fuer Automation Events, ruft die bestehenden Builder und den bestehenden Event-Applier auf und speichert sortierbare Zwischenstaende in `decisions`, `events` und `reports`. V1 unterstuetzt nur lokale Automation ueber `source.validate` und `archive.create`; SSH, SCP, Remote Execution, Netzwerkzugriff, Retry, Resume und Rollback sind nicht Bestandteil.
+
 ## Human Gates
 
 Schritte mit Ausfuehrungsmodus `human` beschreiben Befehle, die der Benutzer selbst auf der Zielumgebung ausfuehren muss. Die Engine besitzt keinen SSH-Zugriff und fuehrt keine Remote-Befehle aus.
@@ -417,7 +438,7 @@ Der Marker-Schritt bleibt blockiert, bis alle erforderlichen Schritte erfolgreic
 
 ## Spaetere Execution
 
-Die Ausfuehrung wird in Version `0.1` nicht implementiert. Eine spaetere Version darf erst nach expliziter Freigabe lokale Pakete vorbereiten oder lokale Pruefungen automatisieren. Remote-Befehle bleiben Human Gates und werden vom Benutzer manuell ausgefuehrt.
+Remote-Ausfuehrung, Resume, Retry, Rollback und produktive Zielsystem-Aktionen sind in Version `0.1` nicht implementiert. Remote-Befehle bleiben Human Gates und werden vom Benutzer manuell ausgefuehrt.
 
 ## Spaetere Verification
 

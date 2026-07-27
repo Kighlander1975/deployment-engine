@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0, Mandatory = $true)]
-    [ValidateSet('plan', 'discover-tools', 'remote-discovery-plan', 'resolve-remote-discovery', 'assess-tool-inventories', 'evaluate-adapter-eligibility', 'select-adapter', 'build-deployment-strategy', 'generate-commands', 'create-command-session', 'update-command-session', 'evaluate-execution-admission', 'build-executor-request', 'execute-local-operation', 'build-automation-started-event', 'build-automation-result-event')]
+    [ValidateSet('plan', 'discover-tools', 'remote-discovery-plan', 'resolve-remote-discovery', 'assess-tool-inventories', 'evaluate-adapter-eligibility', 'select-adapter', 'build-deployment-strategy', 'generate-commands', 'create-command-session', 'update-command-session', 'evaluate-execution-admission', 'build-executor-request', 'execute-local-operation', 'build-automation-started-event', 'build-automation-result-event', 'create-runtime-directory', 'assess-clean-tree', 'orchestrate-local-execution')]
     [string] $Command,
 
     [string] $Analysis,
@@ -9,6 +9,14 @@ param(
     [string] $Manifest,
 
     [string] $ProjectPath,
+
+    [string] $RuntimeRootPath,
+
+    [string] $RepositoryPath,
+
+    [string] $SourceRepositoryPath,
+
+    [int] $MaxAutomationSteps = 50,
 
     [string] $Platform,
 
@@ -332,6 +340,57 @@ switch ($Command) {
 
         $automationEventPath = Join-Path -Path $engineRoot -ChildPath 'src/ps1/Build-AutomationEvent.ps1'
         & $automationEventPath -Operation Result -CommandSessionPath $CommandSessionPath -ExecutorRequestPath $ExecutorRequestPath -ExecutorResultPath $ExecutorResultPath -Timestamp $Timestamp -Format Json -OutputPath $OutputPath
+        exit 0
+    }
+    'create-runtime-directory' {
+        if ([string]::IsNullOrWhiteSpace($Format)) {
+            $Format = 'Json'
+        }
+        if ($Format -ne 'Json') {
+            throw "create-runtime-directory only supports -Format Json."
+        }
+        if ([string]::IsNullOrWhiteSpace($RuntimeRootPath)) {
+            throw "Missing required parameter for 'create-runtime-directory': -RuntimeRootPath"
+        }
+
+        $runtimePath = Join-Path -Path $engineRoot -ChildPath 'src/ps1/New-RuntimeDirectory.ps1'
+        & $runtimePath -RuntimeRootPath $RuntimeRootPath -Format Json -OutputPath $OutputPath
+        exit 0
+    }
+    'assess-clean-tree' {
+        if ([string]::IsNullOrWhiteSpace($Format)) {
+            $Format = 'Json'
+        }
+        if ($Format -ne 'Json') {
+            throw "assess-clean-tree only supports -Format Json."
+        }
+        if ([string]::IsNullOrWhiteSpace($RepositoryPath)) {
+            throw "Missing required parameter for 'assess-clean-tree': -RepositoryPath"
+        }
+
+        $cleanTreePath = Join-Path -Path $engineRoot -ChildPath 'src/ps1/Test-CleanTree.ps1'
+        & $cleanTreePath -RepositoryPath $RepositoryPath -Format Json -OutputPath $OutputPath
+        exit 0
+    }
+    'orchestrate-local-execution' {
+        if ([string]::IsNullOrWhiteSpace($Format)) {
+            $Format = 'Json'
+        }
+        if ($Format -ne 'Json') {
+            throw "orchestrate-local-execution only supports -Format Json."
+        }
+        if ([string]::IsNullOrWhiteSpace($CommandPlanPath)) {
+            throw "Missing required parameter for 'orchestrate-local-execution': -CommandPlanPath"
+        }
+        if ([string]::IsNullOrWhiteSpace($SourceRepositoryPath)) {
+            throw "Missing required parameter for 'orchestrate-local-execution': -SourceRepositoryPath"
+        }
+        if ([string]::IsNullOrWhiteSpace($RuntimeRootPath)) {
+            throw "Missing required parameter for 'orchestrate-local-execution': -RuntimeRootPath"
+        }
+
+        $orchestratorPath = Join-Path -Path $engineRoot -ChildPath 'src/ps1/Invoke-ExecutionOrchestrator.ps1'
+        & $orchestratorPath -CommandPlanPath $CommandPlanPath -SourceRepositoryPath $SourceRepositoryPath -RuntimeRootPath $RuntimeRootPath -MaxAutomationSteps $MaxAutomationSteps -Format Json -OutputPath $OutputPath
         exit 0
     }
 }

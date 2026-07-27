@@ -233,7 +233,27 @@ V1 kennt `archive.zip` und `archive.tar`. `archive.zip` benoetigt lokal `7z` ode
 
 Die Selection ist eine reine Entscheidungsphase nach der Eligibility Evaluation. Eligibility beantwortet, welche Adapter grundsaetzlich nutzbar sind; Selection beantwortet, welcher eligible Adapter tatsaechlich gewaehlt wird. Auswaehlbar sind nur Kandidaten mit `eligibilityStatus = eligible`. Die Sortierung ist deterministisch nach `priority` aufsteigend und danach `adapterId` aufsteigend. Aktuell wird ZIP bei gleicher Eligibility gegenueber TAR bevorzugt, weil `archive.zip` Prioritaet `100` und `archive.tar` Prioritaet `200` besitzt.
 
-Das Ergebnis enthaelt `selectedAdapterId` ausschliesslich in der Selection-Ausgabe. Bei `selected` ist genau ein Kandidat ausgewaehlt. Bei `incomplete` oder `blocked` bleibt `selectedAdapterId = ""`; es wird kein Adapter ausgewaehlt. Selection erzeugt keine Commands, keine Steps, keine Archive und fuehrt nichts aus. Command Generation, Runtime Directory Management, Clean-Tree Gate und Executor bleiben spaetere Phasen.
+Das Ergebnis enthaelt `selectedAdapterId` ausschliesslich in der Selection-Ausgabe. Bei `selected` ist genau ein Kandidat ausgewaehlt. Bei `incomplete` oder `blocked` bleibt `selectedAdapterId = ""`; es wird kein Adapter ausgewaehlt. Selection erzeugt keine Commands, keine Steps, keine Archive und fuehrt nichts aus. Runtime Directory Management, Clean-Tree Assessment, Command Generation und Executor bleiben getrennte Phasen.
+
+## Runtime Directory erzeugen
+
+```powershell
+.\tools\deployment-engine\bin\deployment-engine.ps1 create-runtime-directory `
+    -RuntimeRootPath 'D:\DeploymentRuntime\deployment-runs' `
+    -OutputPath 'D:\DeploymentRuntime\deployment-runs\runtime.json'
+```
+
+Runtime Directory Management erzeugt unter einem expliziten, bereits vorhandenen Runtime Root ein eindeutiges Run-Verzeichnis mit `artifacts`, `decisions`, `events`, `input`, `inventory`, `logs` und `reports`. Die Ausgabe enthaelt nur Metadaten und Pfade. Die Komponente erzeugt keine Session, startet keinen Executor, prueft kein Git und fuehrt kein Deployment aus.
+
+## Clean-Tree bewerten
+
+```powershell
+.\tools\deployment-engine\bin\deployment-engine.ps1 assess-clean-tree `
+    -RepositoryPath 'D:\Projekte\kunde\app' `
+    -OutputPath (Join-Path $runPath 'reports\source-state.json')
+```
+
+Clean-Tree Assessment bewertet den Git-Zustand eines Repository-Pfads rein lesend. Die Ausgabe unterscheidet `clean` und `dirty`, setzt `deploymentAllowed` nur bei sauberem Working Tree auf `true` und listet staged, unstaged sowie untracked Pfade. Die Komponente fuehrt kein `git add`, keinen Commit, keinen Reset, keine Bereinigung und keine Deployment-Aktion aus.
 
 ## Deployment Strategy erzeugen
 
@@ -343,6 +363,22 @@ Archivierung schliesst mindestens `.env`, `.env.*`, `.git`, Schluesseldateien un
 Der Automation Event Builder erzeugt genau ein Command-Session-Event und wendet es nicht an. Der Started Builder prueft eine startbereite lokale Automation und erzeugt `automation-started`. Der Result Builder prueft eine laufende lokale Automation, denselben Executor Request und ein `deployment-executor-result`; dabei muessen Command Session, Executor Request und Executor Result dieselbe `sessionId` tragen. `completed` bleibt erfolgreich, `failed` und `rejected` werden fuer das bestehende Session-Modell als fehlgeschlagenes `automation-result` abgebildet, wobei der urspruengliche Result-Status als `resultStatus` erhalten bleibt.
 
 Der Zeitstempel wird immer explizit uebergeben und nach UTC normalisiert. Der Builder uebernimmt keine freien Request-Daten, keine Environment-Daten, kein `renderedCommand`, kein stdout/stderr und keine Secret-artigen Inhalte in Eventfelder. Die Session wird erst durch `update-command-session` mit dem erzeugten Event veraendert.
+
+## Lokale Ausfuehrung orchestrieren
+
+```powershell
+.\tools\deployment-engine\bin\deployment-engine.ps1 orchestrate-local-execution `
+    -CommandPlanPath (Join-Path $runPath 'decisions\command-plan.json') `
+    -SourceRepositoryPath 'D:\Projekte\kunde\app' `
+    -RuntimeRootPath 'D:\DeploymentRuntime\deployment-runs' `
+    -Format Json
+```
+
+Der Execution Orchestrator V1 koordiniert nur bestehende Bausteine. Er erzeugt ein Runtime-Verzeichnis, kopiert den Command Plan nach `input/command-plan.json`, fuehrt vor jeder Session-Ausfuehrung das Clean-Tree Assessment aus und erstellt erst bei sauberem Repository eine Command Session. Bei Dirty Repository endet der Lauf kontrolliert mit `blocked`, ohne Session, Executor Request, lokale Operation oder Archiv.
+
+Bei zulaessiger lokaler Automation verwendet der Orchestrator die bestehende Kette `Execution Admission -> Executor Request -> automation-started Event -> Command Session Update -> Local Operation Executor -> automation-result Event -> Command Session Update`. Session-Zustaende werden ausschliesslich durch bestehende Events veraendert. Unterstuetzt sind nur die vorhandenen lokalen Operationen `source.validate` und `archive.create`.
+
+Der Orchestrator beendet den Lauf mit `completed`, `failed`, `blocked`, `cancelled`, `waiting-for-human` oder kontrolliert `rejected`. Human Decisions, Human Commands und Review Gates werden nicht automatisch beantwortet; der Lauf pausiert mit `waiting-for-human`. Alle Zwischenartefakte und `reports/execution-summary.json` liegen im erzeugten Runtime-Verzeichnis. V1 ist kein vollstaendiges Deployment, fuehrt kein SSH/SCP aus, nutzt kein Netzwerk, macht kein Git-Staging, keinen Commit, keinen Push, keinen Reset und keinen Rollback.
 
 Exit-Codes:
 
