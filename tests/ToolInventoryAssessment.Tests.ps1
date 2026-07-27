@@ -142,9 +142,11 @@ function New-RemoteInventory {
 
 $local = New-LocalInventory -Overrides @{
     php = New-TestToolResult -Available $true -Path 'C:\php\php.exe' -Version '8.3.12' -Status 'available'
+    unzip = New-TestToolResult -Available $true -Path 'C:\Tools\unzip.exe' -Version '6.00' -Status 'available'
 }
 $remote = New-RemoteInventory -Overrides @{
     php = New-TestToolResult -Available $true -Path '/usr/bin/php' -Version '8.3.12' -Status 'available'
+    unzip = New-TestToolResult -Available $true -Path '/usr/bin/unzip' -Version '6.00' -Status 'available'
 }
 $assessment = New-ToolInventoryAssessment -LocalInventory $local -RemoteInventory $remote
 
@@ -158,6 +160,9 @@ Assert-Equal $assessment.tools.php.local.path 'C:\php\php.exe' 'Local path must 
 Assert-Equal $assessment.tools.php.remote.path '/usr/bin/php' 'Remote path must stay separate.'
 Assert-Equal $assessment.tools.php.local.version '8.3.12' 'Local version must be preserved.'
 Assert-Equal $assessment.tools.php.remote.version '8.3.12' 'Remote version must be preserved.'
+Assert-Equal $assessment.tools.unzip.assessment.status 'available-both' 'Unzip available on both sides must be available-both.'
+Assert-Equal $assessment.tools.unzip.local.path 'C:\Tools\unzip.exe' 'Local unzip path must stay separate.'
+Assert-Equal $assessment.tools.unzip.remote.path '/usr/bin/unzip' 'Remote unzip path must stay separate.'
 
 $deepLocal = New-LocalInventory
 Add-Member -InputObject $deepLocal.project -MemberType NoteProperty -Name 'extra' -Value ([pscustomobject]@{

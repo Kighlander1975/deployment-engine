@@ -61,6 +61,16 @@ Execution Plan
 
 Der Resolver fuehrt keine Aktionen aus. Er trifft keine automatische Adapterwahl, entdeckt keine Tools und erzeugt keine dynamischen Shell-Kommandos.
 
+## Runtime-Dateien
+
+Deployment-Laufzeitdaten und erzeugte Artefakte werden ausserhalb des Deployment-Engine-Repositories und des zu deployenden Projekt-Repositories abgelegt. Jeder Deployment-Lauf erhaelt ein eigenes externes Run-Verzeichnis.
+
+Spaetere Laufdaten koennen beispielsweise Inventare, Assessments, Entscheidungen, Archive, Logs und Reports umfassen. Die Adapter Eligibility Evaluation schreibt weiterhin nur dann eine Datei, wenn explizit `-OutputPath` uebergeben wurde.
+
+Vor einem spaeteren automatischen Deployment wird der Arbeitsbaum des zu deployenden Projekts geprueft. In V1 blockieren sichtbare Aenderungen aus `git status --porcelain` den automatischen Deploy.
+
+Runtime Directory Management und Clean-Tree Gate sind noch nicht implementiert. Beide Architekturbausteine muessen vor Archivierung, Command Generation oder Executor umgesetzt werden. Die aktuelle Adapter Eligibility Evaluation fuehrt keine Git-Statuspruefung aus.
+
 Unbekannte Capability IDs fuehren zu einem harten Fehler. Es gibt keine Fallbacks und keine impliziten Shell Commands.
 
 Der Capability-Katalog enthaelt pro Capability mindestens:
@@ -113,6 +123,7 @@ In Phase 2a werden mindestens folgende globale Werkzeuge ueber eine geschlossene
 - `docker`
 - `7z`
 - `zip`
+- `unzip`
 - `tar`
 
 Projektbezogen wird `artisan` als Datei erkannt, wenn ein Projektpfad angegeben wurde. Fehlende Werkzeuge oder fehlende optionale Projektdateien sind normale Inventory-Ergebnisse.
@@ -183,6 +194,26 @@ Local und Remote bleiben getrennte Quellen. Pfade, Versionen und Projektmerkmale
 Toolstatuswerte sind `available-both`, `available-local-only`, `available-remote-only`, `not-found`, `degraded` und `unknown`. `available-local-only` und `available-remote-only` setzen voraus, dass beide Seiten geprueft wurden. Ein fehlendes Remote Inventory macht ein lokal verfuegbares Tool daher nicht zu `available-local-only`, sondern zu `unknown`.
 
 Versionen werden nur angezeigt und gegenuebergestellt. Unterschiedliche Versionen erzeugen hoechstens einen neutralen Hinweis, aber keine Kompatibilitaetsbewertung und keine Adapterentscheidung.
+
+## Adapter Eligibility Evaluation
+
+Die Adapter Eligibility Evaluation ist eine rein analytische Phase nach dem Assessed Tool Inventory und vor einer spaeteren Adapter Selection.
+
+```text
+Assessed Tool Inventory
+    -> Adapter Eligibility Evaluation
+    -> spaetere Adapter Selection
+```
+
+V1 unterstuetzt genau zwei Adapter: `archive.zip` mit Prioritaet `100` und `archive.tar` mit Prioritaet `200`. Eine niedrigere Zahl bedeutet nur eine spaetere Praeferenz; diese Phase waehlt keinen Adapter aus.
+
+`archive.zip` ist grundsaetzlich nutzbar, wenn lokal `7z` oder `zip` verfuegbar ist und remote `unzip` oder `7z` verfuegbar ist. `archive.tar` ist grundsaetzlich nutzbar, wenn lokal `7z` oder `tar` verfuegbar ist und remote `tar` oder `7z` verfuegbar ist.
+
+Adapterstatuswerte sind `eligible`, `ineligible` und `unknown`. Das Gesamtergebnis ist `ready`, wenn mindestens ein Adapter eligible ist, `incomplete`, wenn kein Adapter eligible ist, aber mindestens einer unknown bleibt, und `blocked`, wenn alle bekannten Adapter nachweislich ineligible sind.
+
+In V1 findet keine tiefergehende tooluebergreifende Kompatibilitaetspruefung statt. Erfuellte Producer- und Consumer-Voraussetzungen fuehren zu `compatibility.status = assumed` und `checked = false`.
+
+Die Phase erzeugt keine Commands, keine Archive, keine Extraktion, keine Dateiuebertragung und keine Ausfuehrung. Eine spaetere V2-Idee ist ein alternativer beziehungsweise manueller Deploymentplan bei blockiertem automatischem Deployment; dieser Planner ist hier ausdruecklich nicht implementiert.
 
 ## Human Gates
 

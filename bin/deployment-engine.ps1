@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0, Mandatory = $true)]
-    [ValidateSet('plan', 'discover-tools', 'remote-discovery-plan', 'resolve-remote-discovery', 'assess-tool-inventories')]
+    [ValidateSet('plan', 'discover-tools', 'remote-discovery-plan', 'resolve-remote-discovery', 'assess-tool-inventories', 'evaluate-adapter-eligibility')]
     [string] $Command,
 
     [string] $Analysis,
@@ -19,6 +19,8 @@ param(
     [string] $LocalInventoryPath,
 
     [string] $RemoteInventoryPath,
+
+    [string] $AssessmentPath,
 
     [string] $Format,
 
@@ -110,6 +112,21 @@ switch ($Command) {
 
         $assessmentPath = Join-Path -Path $engineRoot -ChildPath 'src/ps1/Resolve-ToolInventoryAssessment.ps1'
         & $assessmentPath -LocalInventoryPath $LocalInventoryPath -RemoteInventoryPath $RemoteInventoryPath -Format Json -OutputPath $OutputPath
+        exit 0
+    }
+    'evaluate-adapter-eligibility' {
+        if ([string]::IsNullOrWhiteSpace($Format)) {
+            $Format = 'Json'
+        }
+        if ($Format -ne 'Json') {
+            throw "evaluate-adapter-eligibility only supports -Format Json."
+        }
+        if ([string]::IsNullOrWhiteSpace($AssessmentPath)) {
+            throw "Missing required parameter for 'evaluate-adapter-eligibility': -AssessmentPath"
+        }
+
+        $eligibilityPath = Join-Path -Path $engineRoot -ChildPath 'src/ps1/Resolve-AdapterEligibility.ps1'
+        & $eligibilityPath -AssessmentPath $AssessmentPath -Format Json -OutputPath $OutputPath
         exit 0
     }
 }

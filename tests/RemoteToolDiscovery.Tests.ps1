@@ -88,6 +88,8 @@ function New-CompleteOutputMap {
     $outputs['remote.tool.7z.version'] = '7-Zip 24.09 (x64)'
     $outputs['remote.tool.zip.location'] = '/usr/bin/zip'
     $outputs['remote.tool.zip.version'] = 'Unclear zip banner'
+    $outputs['remote.tool.unzip.location'] = '/usr/bin/unzip'
+    $outputs['remote.tool.unzip.version'] = 'UnZip 6.00 of 20 April 2009, by Debian.'
     $outputs['remote.tool.tar.location'] = '/usr/bin/tar'
     $outputs['remote.tool.tar.version'] = 'tar: error while loading shared libraries: libacl.so'
     $outputs['remote.project.artisan.exists'] = 'present'
@@ -109,7 +111,7 @@ Assert-Equal $plan.platform 'linux' 'Remote plan must use explicit linux platfor
 Assert-Equal $plan.executionMode 'human' 'Remote plan must be a human gate.'
 Assert-Equal $plan.status 'waiting-for-human' 'Remote plan must wait for human output.'
 Assert-Equal $plan.blocksAutomaticContinuation $true 'Remote plan must block automatic continuation.'
-Assert-Equal (@($plan.probes).Count) 17 'Remote plan must include expected probe count.'
+Assert-Equal (@($plan.probes).Count) 19 'Remote plan must include expected probe count.'
 Assert-Equal ((@($plan.probes) | Select-Object -First 1).probeId) 'remote.tool.php.location' 'Remote probe order must be deterministic.'
 Assert-Equal ((@($plan.probes) | Select-Object -Last 1).probeId) 'remote.project.deployment-project-json.exists' 'Remote probe order must include project probes deterministically.'
 Assert-Equal $plan.planFingerprint $samePlanLater.planFingerprint 'Plan timestamp must not affect fingerprint.'
@@ -153,6 +155,9 @@ Assert-Equal $inventory.tools.docker.available $false 'Empty docker location mus
 Assert-Equal $inventory.tools.docker.status 'not-found' 'Empty docker location must be not-found.'
 Assert-Equal $inventory.tools.zip.available $true 'Zip with unreadable version must remain available.'
 Assert-Equal $inventory.tools.zip.status 'version-unavailable' 'Unreadable zip version must be version-unavailable.'
+Assert-Equal $inventory.tools.unzip.available $true 'Remote unzip must be available when location exists.'
+Assert-Equal $inventory.tools.unzip.version '6.00' 'Remote unzip version must be parsed.'
+Assert-Equal $inventory.tools.unzip.status 'available' 'Remote unzip status must be available.'
 Assert-Equal $inventory.tools.tar.available $true 'Tar with failed version probe must remain available.'
 Assert-Equal $inventory.tools.tar.status 'probe-failed' 'Technical probe failure must be isolated.'
 Assert-Equal $inventory.tools.'7z'.version '24.09' '7z version must be parsed from banner.'
@@ -160,7 +165,7 @@ Assert-Equal $inventory.project.artisan.available $true 'Remote artisan file mus
 Assert-Equal $inventory.project.composerJson.available $true 'Remote composer.json must be detected.'
 Assert-Equal $inventory.project.packageJson.available $false 'Missing optional project file must be normal result.'
 Assert-True (-not ($inventory.PSObject.Properties.Name -contains 'errors')) 'Remote inventory must not expose undefined global errors.'
-Assert-Equal (($inventory.tools.PSObject.Properties.Name) -join ',') 'php,composer,docker,7z,zip,tar' 'Remote inventory tool order must match local tool order.'
+Assert-Equal (($inventory.tools.PSObject.Properties.Name) -join ',') 'php,composer,docker,7z,zip,unzip,tar' 'Remote inventory tool order must match local tool order.'
 
 $missingOutputs = New-CompleteOutputMap -Plan $plan
 $missingOutputs.Remove('remote.tool.php.version')

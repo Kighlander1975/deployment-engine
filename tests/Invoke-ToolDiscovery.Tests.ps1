@@ -45,6 +45,7 @@ $toolState = @{
     docker = [pscustomobject]@{ found = $true; path = 'C:\Tools\docker.exe'; stdout = ''; stderr = ''; failed = $false; timedOut = $false; diagnostic = '' }
     '7z' = [pscustomobject]@{ found = $true; path = 'C:\Tools\7z.exe'; stdout = ''; stderr = ''; failed = $true; timedOut = $true; diagnostic = 'Probe timed out after 5 seconds.' }
     zip = [pscustomobject]@{ found = $true; path = 'C:\Tools\zip.exe'; stdout = "Zip 3.0`n"; stderr = ''; failed = $false; timedOut = $false; diagnostic = '' }
+    unzip = [pscustomobject]@{ found = $false; path = ''; stdout = ''; stderr = ''; failed = $false; timedOut = $false; diagnostic = '' }
     tar = [pscustomobject]@{ found = $true; path = 'C:\Tools\tar.exe'; stdout = "tar (GNU tar) 1.34`n"; stderr = ''; failed = $false; timedOut = $false; diagnostic = '' }
 }
 $script:probeCalls = New-Object System.Collections.Generic.List[object]
@@ -92,8 +93,16 @@ Assert-Equal $result.tools.docker.status 'version-unavailable' 'Tool without rea
 Assert-Equal $result.tools.'7z'.available $true 'Failed probe must be available when executable was found.'
 Assert-Equal $result.tools.'7z'.status 'probe-failed' 'Failed probe must be probe-failed.'
 Assert-True ($result.tools.'7z'.diagnostic -match 'timed out') 'Failed probe must include diagnostic.'
-Assert-Equal ($result.tools.PSObject.Properties.Name -join ',') 'php,composer,docker,7z,zip,tar' 'Tools must be emitted in deterministic catalog order.'
+Assert-Equal $result.tools.unzip.available $false 'Missing unzip must not be available.'
+Assert-Equal $result.tools.unzip.status 'not-found' 'Missing unzip must be not-found.'
+Assert-Equal ($result.tools.PSObject.Properties.Name -join ',') 'php,composer,docker,7z,zip,unzip,tar' 'Tools must be emitted in deterministic catalog order.'
 Assert-True (-not ($result.PSObject.Properties.Name -contains 'errors')) 'Discovery result must not expose unused global errors.'
+
+$toolState.unzip = [pscustomobject]@{ found = $true; path = 'C:\Tools\unzip.exe'; stdout = "UnZip 6.00 of 20 April 2009`n"; stderr = ''; failed = $false; timedOut = $false; diagnostic = '' }
+$unzipPresentResult = New-ToolDiscoveryResult -Finder $finder -Probe $probe -NowUtc $fixedNow
+Assert-Equal $unzipPresentResult.tools.unzip.available $true 'Found unzip must be available.'
+Assert-Equal $unzipPresentResult.tools.unzip.path 'C:\Tools\unzip.exe' 'Found unzip path must be used.'
+Assert-Equal $unzipPresentResult.tools.unzip.status 'available' 'Found unzip with version output must be available.'
 
 try {
     [void] (Get-DeploymentToolDefinition -ToolId 'unknown')

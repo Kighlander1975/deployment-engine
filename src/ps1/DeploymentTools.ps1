@@ -27,6 +27,11 @@ function Get-DeploymentToolCatalog {
             commandNames = @('zip')
             probeArguments = @('-v')
         }
+        unzip = [pscustomobject]@{
+            toolId = 'unzip'
+            commandNames = @('unzip')
+            probeArguments = @('-v')
+        }
         tar = [pscustomobject]@{
             toolId = 'tar'
             commandNames = @('tar')

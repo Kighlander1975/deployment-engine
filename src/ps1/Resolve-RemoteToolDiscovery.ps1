@@ -239,6 +239,9 @@ function Get-RemoteToolVersionFromText {
         'zip' {
             if ($Text -match '(?i)\bZip\s+([0-9]+(?:\.[0-9]+){1,3})\b') { return $Matches[1] }
         }
+        'unzip' {
+            if ($Text -match '(?i)\bUnZip\s+([0-9]+(?:\.[0-9]+){1,3})\b') { return $Matches[1] }
+        }
         'tar' {
             if ($firstLine -match '(?i)\btar\b.*\s([0-9]+(?:\.[0-9]+){1,3})\b') { return $Matches[1] }
         }

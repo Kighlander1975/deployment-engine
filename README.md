@@ -21,6 +21,7 @@ Analyzer
     -> Remote Tool Inventory
     -> Tool Inventory Assessment
     -> Assessed Tool Inventory
+    -> Adapter Eligibility Evaluation
     -> spaeterer Executor
 ```
 
@@ -40,6 +41,8 @@ Remote Discovery erzeugt dagegen nur einen sicheren Human-Gate-Pruefplan. Die En
 
 Tool Inventory Assessment fuehrt vorhandene Local- und Remote-Inventare analytisch zusammen. Eine Quelle darf fehlen; dann bleibt die vorhandene Quelle sichtbar, das Gesamtassessment wird `incomplete` und Toolbewertungen mit unzureichender Datenbasis werden `unknown`.
 
+Adapter Eligibility Evaluation bewertet aus einem Assessed Tool Inventory, welche bekannten Deployment-Adapter ihre Voraussetzungen erfuellen. Sie trifft keine finale Adapterauswahl, erzeugt keine Befehle und fuehrt nichts aus.
+
 ## Unterstuetzter Umfang in Version 0.1
 
 - Projektmanifest lesen und validieren
@@ -51,9 +54,10 @@ Tool Inventory Assessment fuehrt vorhandene Local- und Remote-Inventare analytis
 - Konsolenzusammenfassung und optionales Analyzer-JSON erzeugen
 - Analyzer-JSON in einen Execution Plan mit Capability IDs uebersetzen
 - Capability IDs in einen Resolved Execution Plan aufloesen
-- lokale Tool Discovery fuer `php`, `composer`, `docker`, `7z`, `zip`, `tar` und projektbezogen `artisan`
+- lokale Tool Discovery fuer `php`, `composer`, `docker`, `7z`, `zip`, `unzip`, `tar` und projektbezogen `artisan`
 - Remote Tool Discovery als Human Gate mit statischer Probe-Allowlist und markierter Konsolenausgabe
 - Tool Inventory Assessment ohne Adapter Selection oder Versionskompatibilitaetsentscheidung
+- Adapter Eligibility Evaluation fuer `archive.zip` und `archive.tar` ohne finale Adapterauswahl
 - Agent-, Human- und Review-Schritte unterscheiden
 - verbindliche Pausepunkte, Abhaengigkeiten und Validierungsanforderungen modellieren
 - Migrationen als High-Risk-Schritte mit Safety Review, `migrate:status` und ausdruecklicher Freigabe modellieren
@@ -62,19 +66,30 @@ Tool Inventory Assessment fuehrt vorhandene Local- und Remote-Inventare analytis
 
 ## Beispielaufruf fuer das Pilotprojekt
 
+Deployment-Laufzeitdaten sollen in einem externen Run-Verzeichnis liegen, nicht im Deployment-Engine-Repository und nicht im zu deployenden Projekt-Repository. `<run-id>` ist ein Platzhalter fuer eine eindeutige Laufkennung.
+
+```powershell
+$runPath = Join-Path $env:LOCALAPPDATA 'SHK-MOMM\deployment-engine\runs\<run-id>'
+New-Item -ItemType Directory -Force -Path `
+    (Join-Path $runPath 'input'), `
+    (Join-Path $runPath 'plans'), `
+    (Join-Path $runPath 'inventories'), `
+    (Join-Path $runPath 'decisions') | Out-Null
+```
+
 ```powershell
 .\tools\deployment-engine\src\ps1\Invoke-DeploymentAnalysis.ps1 `
     -ProjectManifestPath C:\path\to\your-project\deployment.project.json `
     -BaselineCommit e1cdff9 `
     -TargetCommit HEAD `
-    -OutputPath C:\path\to\your-project\.tmp\deployment-analysis.json
+    -OutputPath (Join-Path $runPath 'input\deployment-analysis.json')
 ```
 
 ## Execution Plan erzeugen
 
 ```powershell
 .\tools\deployment-engine\bin\deployment-engine.ps1 plan `
-    -Analysis C:\path\to\your-project\.tmp\deployment-analysis.json `
+    -Analysis (Join-Path $runPath 'input\deployment-analysis.json') `
     -Manifest C:\path\to\your-project\deployment.project.json `
     -Format Text
 ```
@@ -83,10 +98,10 @@ JSON-Ausgabe:
 
 ```powershell
 .\tools\deployment-engine\bin\deployment-engine.ps1 plan `
-    -Analysis C:\path\to\your-project\.tmp\deployment-analysis.json `
+    -Analysis (Join-Path $runPath 'input\deployment-analysis.json') `
     -Manifest C:\path\to\your-project\deployment.project.json `
     -Format Json `
-    -OutputPath C:\path\to\your-project\.tmp\execution-plan.json
+    -OutputPath (Join-Path $runPath 'plans\execution-plan.json')
 ```
 
 Die `plan`-Ausgabe ist bereits ein resolved Plan. Der Resolver ist auch separat als PowerShell-Komponente vorhanden:
@@ -143,7 +158,7 @@ Statuswerte sind `available`, `not-found`, `version-unavailable`, `probe-failed`
 ```powershell
 .\tools\deployment-engine\bin\deployment-engine.ps1 remote-discovery-plan `
     -Platform linux `
-    -OutputPath C:\path\to\your-project\.tmp\remote-discovery-plan.json
+    -OutputPath (Join-Path $runPath 'plans\remote-discovery-plan.json')
 ```
 
 Der Plan enthaelt ein Human Gate, einen deterministischen `planFingerprint`, feste Probe-IDs, feste Anzeigebefehle und ein Marker-Template. Vor den Projektprobes wechselt der Benutzer selbst in das bekannte Projektverzeichnis; Projektpfade werden nicht in Shell-Kommandos interpoliert.
@@ -152,9 +167,9 @@ Nach der manuellen Ausfuehrung wird die vollstaendige Ausgabe im Markerformat au
 
 ```powershell
 .\tools\deployment-engine\bin\deployment-engine.ps1 resolve-remote-discovery `
-    -PlanPath C:\path\to\your-project\.tmp\remote-discovery-plan.json `
-    -ResponsePath C:\path\to\your-project\.tmp\remote-discovery-response.txt `
-    -OutputPath C:\path\to\your-project\.tmp\remote-tool-inventory.json
+    -PlanPath (Join-Path $runPath 'plans\remote-discovery-plan.json') `
+    -ResponsePath (Join-Path $runPath 'input\remote-discovery-response.txt') `
+    -OutputPath (Join-Path $runPath 'inventories\remote-tool-inventory.json')
 ```
 
 Eine blosse Bestaetigung wie `erledigt` reicht nicht aus. Unbekannte, doppelte oder unvollstaendige Marker werden kontrolliert abgelehnt beziehungsweise als unvollstaendig bewertet. Die Ausgabe wird nur als Text verarbeitet und in ein Remote Tool Inventory ueberfuehrt. Es findet keine Adapter Selection, Installation oder Deployment-Ausfuehrung statt. Keine Passwoerter, Tokens, Zugangsdaten oder `.env`-Inhalte einfuegen.
@@ -163,12 +178,22 @@ Eine blosse Bestaetigung wie `erledigt` reicht nicht aus. Unbekannte, doppelte o
 
 ```powershell
 .\tools\deployment-engine\bin\deployment-engine.ps1 assess-tool-inventories `
-    -LocalInventoryPath C:\path\to\your-project\.tmp\local-tool-inventory.json `
-    -RemoteInventoryPath C:\path\to\your-project\.tmp\remote-tool-inventory.json `
-    -OutputPath C:\path\to\your-project\.tmp\assessed-tool-inventory.json
+    -LocalInventoryPath (Join-Path $runPath 'inventories\local-tool-inventory.json') `
+    -RemoteInventoryPath (Join-Path $runPath 'inventories\remote-tool-inventory.json') `
+    -OutputPath (Join-Path $runPath 'decisions\assessed-tool-inventory.json')
 ```
 
 Mindestens ein Inventory-Pfad muss angegeben werden. Local und Remote bleiben getrennte Quellen; Pfade und Versionen werden nicht zusammengefuehrt. Fehlt eine Quelle, entsteht `status = incomplete`. `available-local-only` und `available-remote-only` bedeuten, dass beide Seiten tatsaechlich geprueft wurden. Unterschiedliche Versionen werden nur angezeigt und nicht als kompatibel oder inkompatibel bewertet.
+
+## Adapter Eligibility bewerten
+
+```powershell
+.\tools\deployment-engine\bin\deployment-engine.ps1 evaluate-adapter-eligibility `
+    -AssessmentPath (Join-Path $runPath 'decisions\assessed-tool-inventory.json') `
+    -OutputPath (Join-Path $runPath 'decisions\adapter-eligibility.json')
+```
+
+V1 kennt `archive.zip` und `archive.tar`. `archive.zip` benoetigt lokal `7z` oder `zip` und remote `unzip` oder `7z`. `archive.tar` benoetigt lokal `7z` oder `tar` und remote `tar` oder `7z`. Adapterstatuswerte sind `eligible`, `ineligible` und `unknown`; das Gesamtergebnis ist `ready`, `incomplete` oder `blocked`. Die Kompatibilitaet wird in V1 nur als angenommen ausgewiesen. Eine spaetere Adapter Selection oder ein alternativer manueller Deploymentplan bei blockiertem automatischem Deployment ist Roadmap, nicht Teil dieser Phase.
 
 Exit-Codes:
 
