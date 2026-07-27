@@ -23,6 +23,7 @@ Analyzer
     -> Assessed Tool Inventory
     -> Adapter Eligibility Evaluation
     -> Adapter Selection
+    -> Deployment Strategy
     -> spaeterer Executor
 ```
 
@@ -46,6 +47,8 @@ Adapter Eligibility Evaluation bewertet aus einem Assessed Tool Inventory, welch
 
 Adapter Selection liest ausschliesslich das Eligibility-Ergebnis und waehlt deterministisch genau einen eligible Adapter aus, sofern eine Auswahl moeglich ist. Sie bewertet keine Tool-Verfuegbarkeit neu, erzeugt keine Commands und fuehrt nichts aus.
 
+Deployment Strategy kombiniert den Resolved Execution Plan mit der Adapter Selection zu einem fachlichen Ablauf fuer spaetere Command Generation. Sie beschreibt Operationen, Akteure, Orte, Human Gates und Rueckmeldeanforderungen, erzeugt aber keine konkreten Shell-, SSH- oder SCP-Kommandos und fuehrt nichts aus.
+
 ## Unterstuetzter Umfang in Version 0.1
 
 - Projektmanifest lesen und validieren
@@ -62,6 +65,7 @@ Adapter Selection liest ausschliesslich das Eligibility-Ergebnis und waehlt dete
 - Tool Inventory Assessment ohne Versionskompatibilitaetsentscheidung
 - Adapter Eligibility Evaluation fuer `archive.zip` und `archive.tar` ohne finale Adapterauswahl
 - Adapter Selection fuer `archive.zip` und `archive.tar` nach zentraler Adapter-Prioritaet
+- Deployment Strategy mit Actor-Modell `automation`, `human-decision`, `human-command` und `review`
 - Agent-, Human- und Review-Schritte unterscheiden
 - verbindliche Pausepunkte, Abhaengigkeiten und Validierungsanforderungen modellieren
 - Migrationen als High-Risk-Schritte mit Safety Review, `migrate:status` und ausdruecklicher Freigabe modellieren
@@ -210,6 +214,19 @@ V1 kennt `archive.zip` und `archive.tar`. `archive.zip` benoetigt lokal `7z` ode
 Die Selection ist eine reine Entscheidungsphase nach der Eligibility Evaluation. Eligibility beantwortet, welche Adapter grundsaetzlich nutzbar sind; Selection beantwortet, welcher eligible Adapter tatsaechlich gewaehlt wird. Auswaehlbar sind nur Kandidaten mit `eligibilityStatus = eligible`. Die Sortierung ist deterministisch nach `priority` aufsteigend und danach `adapterId` aufsteigend. Aktuell wird ZIP bei gleicher Eligibility gegenueber TAR bevorzugt, weil `archive.zip` Prioritaet `100` und `archive.tar` Prioritaet `200` besitzt.
 
 Das Ergebnis enthaelt `selectedAdapterId` ausschliesslich in der Selection-Ausgabe. Bei `selected` ist genau ein Kandidat ausgewaehlt. Bei `incomplete` oder `blocked` bleibt `selectedAdapterId = ""`; es wird kein Adapter ausgewaehlt. Selection erzeugt keine Commands, keine Steps, keine Archive und fuehrt nichts aus. Command Generation, Runtime Directory Management, Clean-Tree Gate und Executor bleiben spaetere Phasen.
+
+## Deployment Strategy erzeugen
+
+```powershell
+.\tools\deployment-engine\bin\deployment-engine.ps1 build-deployment-strategy `
+    -ExecutionPlanPath (Join-Path $runPath 'plans\execution-plan.json') `
+    -AdapterSelectionPath (Join-Path $runPath 'decisions\adapter-selection.json') `
+    -OutputPath (Join-Path $runPath 'decisions\deployment-strategy.json')
+```
+
+Die Deployment Strategy ist eine reine Planungsphase nach Adapter Selection und vor spaeterer Command Generation. Sie unterscheidet `automation`, `human-decision`, `human-command` und `review`. Lokale automatisierbare Schritte werden als `automation` modelliert. Ein zentrales Deployment-Approval ist ein `human-decision` Gate. SSH- und Upload-nahe Schritte bleiben in V1 `human-command`: Die Strategy markiert nur, dass spaeter ein vollstaendig kopierbarer Befehl erzeugt werden muss; der Benutzer fuehrt ihn aus und liefert strukturierte Rueckmeldung wie Exit-Status, stdout und stderr.
+
+Statuswerte sind `ready`, `incomplete` und `blocked`. Der normale V1-Erfolgsfall ist `ready`, weil eine vorherige Adapter Selection mit `status = selected` erforderlich ist. Bei `incomplete` oder `blocked` aus der Adapter Selection wird keine ausfuehrbare Strategy erzeugt. Die Phase erzeugt keine Commands, fuehrt keine Git-Pruefung aus, legt kein Runtime-Verzeichnis an und startet keinen Executor.
 
 Exit-Codes:
 

@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0, Mandatory = $true)]
-    [ValidateSet('plan', 'discover-tools', 'remote-discovery-plan', 'resolve-remote-discovery', 'assess-tool-inventories', 'evaluate-adapter-eligibility', 'select-adapter')]
+    [ValidateSet('plan', 'discover-tools', 'remote-discovery-plan', 'resolve-remote-discovery', 'assess-tool-inventories', 'evaluate-adapter-eligibility', 'select-adapter', 'build-deployment-strategy')]
     [string] $Command,
 
     [string] $Analysis,
@@ -23,6 +23,10 @@ param(
     [string] $AssessmentPath,
 
     [string] $EligibilityPath,
+
+    [string] $ExecutionPlanPath,
+
+    [string] $AdapterSelectionPath,
 
     [string] $Format,
 
@@ -144,6 +148,24 @@ switch ($Command) {
 
         $selectionPath = Join-Path -Path $engineRoot -ChildPath 'src/ps1/Select-DeploymentAdapter.ps1'
         & $selectionPath -EligibilityPath $EligibilityPath -Format Json -OutputPath $OutputPath
+        exit 0
+    }
+    'build-deployment-strategy' {
+        if ([string]::IsNullOrWhiteSpace($Format)) {
+            $Format = 'Json'
+        }
+        if ($Format -ne 'Json') {
+            throw "build-deployment-strategy only supports -Format Json."
+        }
+        if ([string]::IsNullOrWhiteSpace($ExecutionPlanPath)) {
+            throw "Missing required parameter for 'build-deployment-strategy': -ExecutionPlanPath"
+        }
+        if ([string]::IsNullOrWhiteSpace($AdapterSelectionPath)) {
+            throw "Missing required parameter for 'build-deployment-strategy': -AdapterSelectionPath"
+        }
+
+        $strategyPath = Join-Path -Path $engineRoot -ChildPath 'src/ps1/Build-DeploymentStrategy.ps1'
+        & $strategyPath -ExecutionPlanPath $ExecutionPlanPath -AdapterSelectionPath $AdapterSelectionPath -Format Json -OutputPath $OutputPath
         exit 0
     }
 }

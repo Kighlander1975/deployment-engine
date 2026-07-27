@@ -1,6 +1,6 @@
 # Engine Pipeline
 
-Die Pipeline der Version `0.1` ist bewusst in Analyse, Planerzeugung, Capability-Aufloesung, Tool Discovery, Adapterentscheidung und spaetere Ausfuehrung getrennt.
+Die Pipeline der Version `0.1` ist bewusst in Analyse, Planerzeugung, Capability-Aufloesung, Tool Discovery, Adapterentscheidung, Deployment Strategy und spaetere Ausfuehrung getrennt.
 
 ## Project Detection
 
@@ -65,11 +65,11 @@ Der Resolver fuehrt keine Aktionen aus. Er trifft keine automatische Adapterwahl
 
 Deployment-Laufzeitdaten und erzeugte Artefakte werden ausserhalb des Deployment-Engine-Repositories und des zu deployenden Projekt-Repositories abgelegt. Jeder Deployment-Lauf erhaelt ein eigenes externes Run-Verzeichnis.
 
-Spaetere Laufdaten koennen beispielsweise Inventare, Assessments, Entscheidungen, Archive, Logs und Reports umfassen. Adapter Eligibility Evaluation und Adapter Selection schreiben weiterhin nur dann eine Datei, wenn explizit `-OutputPath` uebergeben wurde.
+Spaetere Laufdaten koennen beispielsweise Inventare, Assessments, Entscheidungen, Strategien, Archive, Logs und Reports umfassen. Adapter Eligibility Evaluation, Adapter Selection und Deployment Strategy schreiben weiterhin nur dann eine Datei, wenn explizit `-OutputPath` uebergeben wurde.
 
 Vor einem spaeteren automatischen Deployment wird der Arbeitsbaum des zu deployenden Projekts geprueft. In V1 blockieren sichtbare Aenderungen aus `git status --porcelain` den automatischen Deploy.
 
-Runtime Directory Management und Clean-Tree Gate sind noch nicht implementiert. Beide Architekturbausteine muessen vor Archivierung, Command Generation oder Executor umgesetzt werden. Die aktuelle Adapter Eligibility Evaluation und Adapter Selection fuehren keine Git-Statuspruefung aus.
+Runtime Directory Management und Clean-Tree Gate sind noch nicht implementiert. Beide Architekturbausteine muessen vor Archivierung, Command Generation oder Executor umgesetzt werden. Die aktuelle Adapter Eligibility Evaluation, Adapter Selection und Deployment Strategy fuehren keine Git-Statuspruefung aus.
 
 Unbekannte Capability IDs fuehren zu einem harten Fehler. Es gibt keine Fallbacks und keine impliziten Shell Commands.
 
@@ -223,6 +223,7 @@ Die Adapter Selection ist eine rein analytische Phase nach der Adapter Eligibili
 ```text
 Adapter Eligibility Evaluation
     -> Adapter Selection
+    -> Deployment Strategy
     -> spaetere Command Generation
     -> spaeterer Executor
 ```
@@ -234,6 +235,26 @@ Auswaehlbar sind ausschliesslich Adapter mit `eligibilityStatus = eligible`. Eli
 Das Statusmodell der Selection ist `selected`, `incomplete` und `blocked`. Bei `selected` ist genau ein Adapter gewaehlt und `selectedAdapterId` enthaelt dessen ID. Bei `incomplete` gibt es keinen eligible Adapter, aber mindestens einen unknown Kandidaten; bei `blocked` sind alle bekannten Adapter ineligible. In beiden Faellen bleibt `selectedAdapterId = ""`.
 
 Die Ausgabe enthaelt fuer jeden bekannten Adapter genau einen Kandidaten. Kandidaten werden nach derselben deterministischen Regel sortiert und dokumentieren Status, Prioritaet, Selection-Flag und Diagnose. Selection erzeugt keine Commands, keine Steps, keine Archive, keine Dateiuebertragung und fuehrt nichts aus. Eine spaetere V2-Idee ist ein alternativer beziehungsweise manueller Deploymentplan bei blockiertem automatischem Deployment; dieser Planner ist hier ausdruecklich nicht implementiert.
+
+## Deployment Strategy
+
+Die Deployment Strategy ist eine rein analytische Planungsphase nach Adapter Selection. Sie kombiniert einen validierten Resolved Execution Plan mit einem validierten Adapter-Selection-Ergebnis.
+
+```text
+Resolved Execution Plan
+    + Adapter Selection
+    -> Deployment Strategy
+    -> spaetere Command Generation
+    -> spaeterer Executor
+```
+
+Die Strategy beschreibt fachliche Operationen, Reihenfolge, Actor, Ausfuehrungsort, Command-Generation-Anforderungen, Human Gates und Rueckmeldeanforderungen. Sie fuehrt keine Tool Discovery aus, bewertet Eligibility nicht neu, waehlt keinen Adapter neu aus, erzeugt keine konkreten Shell-, SSH-, SCP-, Composer-, Artisan- oder Git-Kommandos und fuehrt nichts aus.
+
+Das Statusmodell ist `ready`, `incomplete` und `blocked`. In V1 setzt die Strategy eine Adapter Selection mit `status = selected` voraus; `incomplete` und `blocked` aus der Selection werden kontrolliert abgelehnt, damit keine ausfuehrbare Strategy ohne Adapterauswahl entsteht.
+
+Das Actor-Modell unterscheidet `automation`, `human-decision`, `human-command` und `review`. Lokale automatisierbare Schritte werden als `automation` mit `commandExecutionMode = automatic` modelliert, sofern keine fachliche Entscheidung erforderlich ist. Das zentrale Deployment-Approval ist ein `human-decision` Gate. SSH- und Upload-nahe Operationen werden in V1 als `human-command` mit `commandExecutionMode = copy-and-run` modelliert; der kopierbare Befehl entsteht erst in einer spaeteren Command-Generation-Phase. Nach Human Commands ist strukturierte Rueckmeldung erforderlich, mindestens Exit-Status, stdout und stderr.
+
+Die V1-Strategie fuer `archive.zip` und `archive.tar` verwendet denselben fachlichen Ablauf: Source-Validierung, Artefaktvorbereitung, Archiverstellung, Deployment-Freigabe, Remote-Release-Verzeichnis, Upload, Extraktion, Applikationsfinalisierung und Review-Verifikation. Unterschiede zwischen ZIP und TAR bleiben auf Adapterformat und spaetere Command Generation begrenzt. Migrationen, Composer-Schritte oder Framework-spezifische Operationen duerfen nur aus dem Resolved Execution Plan abgeleitet werden und werden nicht als freie Commands erfunden.
 
 ## Human Gates
 
