@@ -1,0 +1,144 @@
+{
+  "schemaVersion": "0.1",
+  "commandPlanType": "deployment-command-plan",
+  "status": "ready",
+  "sourceStrategyType": "deployment",
+  "selectedAdapterId": "archive.zip",
+  "executionPolicy": {
+    "executionAllowed": false,
+    "automaticExecutionAllowed": false,
+    "remoteExecutionMode": "copy-and-run"
+  },
+  "commands": [
+    {
+      "commandId": "source.validate",
+      "sequence": 100,
+      "strategyStepId": "source.validate",
+      "operationType": "source.validate",
+      "actor": "automation",
+      "executionLocation": "local",
+      "executionMode": "automatic",
+      "dependsOn": [],
+      "program": "local-operation",
+      "arguments": [
+        "source.validate"
+      ],
+      "workingDirectory": "",
+      "environment": {},
+      "operation": {
+        "sourcePath": "examples/e2e/source"
+      },
+      "renderedCommand": "",
+      "display": {
+        "title": "source.validate",
+        "description": "",
+        "copyable": false
+      },
+      "feedback": {
+        "required": false,
+        "expectedData": []
+      },
+      "safety": {
+        "destructive": false,
+        "containsSecret": false,
+        "requiresApproval": false,
+        "executionPermitted": false
+      },
+      "diagnostic": ""
+    },
+    {
+      "commandId": "archive.create",
+      "sequence": 200,
+      "strategyStepId": "archive.create",
+      "operationType": "archive.create",
+      "actor": "automation",
+      "executionLocation": "local",
+      "executionMode": "automatic",
+      "dependsOn": [
+        "source.validate"
+      ],
+      "program": "local-operation",
+      "arguments": [
+        "archive.create"
+      ],
+      "workingDirectory": "",
+      "environment": {},
+      "operation": {
+        "sourcePath": "examples/e2e/source",
+        "artifactPath": ""
+      },
+      "renderedCommand": "",
+      "display": {
+        "title": "archive.create",
+        "description": "",
+        "copyable": false
+      },
+      "feedback": {
+        "required": false,
+        "expectedData": []
+      },
+      "safety": {
+        "destructive": false,
+        "containsSecret": false,
+        "requiresApproval": false,
+        "executionPermitted": false
+      },
+      "diagnostic": ""
+    },
+    {
+      "commandId": "post.approval.source.validate",
+      "sequence": 400,
+      "strategyStepId": "post.approval.source.validate",
+      "operationType": "source.validate",
+      "actor": "automation",
+      "executionLocation": "local",
+      "executionMode": "automatic",
+      "dependsOn": [
+        "deployment.approval"
+      ],
+      "program": "local-operation",
+      "arguments": [
+        "source.validate"
+      ],
+      "workingDirectory": "",
+      "environment": {},
+      "operation": {
+        "sourcePath": "examples/e2e/source"
+      },
+      "renderedCommand": "",
+      "display": {
+        "title": "post.approval.source.validate",
+        "description": "",
+        "copyable": false
+      },
+      "feedback": {
+        "required": false,
+        "expectedData": []
+      },
+      "safety": {
+        "destructive": false,
+        "containsSecret": false,
+        "requiresApproval": false,
+        "executionPermitted": false
+      },
+      "diagnostic": ""
+    }
+  ],
+  "humanGates": [
+    {
+      "gateId": "deployment.approval",
+      "stepId": "deployment.approval",
+      "sequence": 300,
+      "dependsOn": [
+        "archive.create"
+      ],
+      "gateType": "approval",
+      "blocksContinuation": true,
+      "allowedResponses": [
+        "approved",
+        "rejected"
+      ]
+    }
+  ],
+  "diagnostic": ""
+}

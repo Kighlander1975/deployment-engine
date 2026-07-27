@@ -391,6 +391,25 @@ Ein pausierter lokaler Lauf kann mit einem explizit bereitgestellten Session-Eve
 
 Resume laedt `input/command-plan.json`, `decisions/command-plan-effective.json`, `reports/execution-summary.json` und den deterministisch letzten Command-Session-Snapshot. Zulaessig ist nur ein vorheriger Status `waiting-for-human` mit passendem Human- oder Review-Current-Item. Unterstuetzt werden ausschliesslich vorhandene Session-Events `human-decision-submitted`, `human-command-result` und `review-result`; das Event muss dieselbe `sessionId` tragen und darf noch nicht in der Event-History enthalten sein. Die Engine erzeugt keine Entscheidung selbst, wendet das Event nur ueber `Apply-CommandSessionEvent` an, archiviert es unter `events/external-session-event-*.json` und schreibt neue Snapshots ohne bestehende Artefakte zu ueberschreiben.
 
+## Local End-to-End Example
+
+Ein minimales lokales Beispiel liegt unter `examples/e2e`. Der Beispiel-Command-Plan modelliert `source.validate`, `archive.create`, eine Human Approval und danach einen weiteren vorhandenen lokalen `source.validate`-Schritt als Post-Approval-Pruefung.
+
+```powershell
+.\tools\deployment-engine\bin\deployment-engine.ps1 orchestrate-local-execution `
+    -CommandPlanPath '.\tools\deployment-engine\examples\e2e\command-plan.example.json' `
+    -SourceRepositoryPath 'D:\Projekte\kunde\app' `
+    -RuntimeRootPath 'D:\DeploymentRuntime\deployment-runs' `
+    -Format Json
+
+.\tools\deployment-engine\bin\deployment-engine.ps1 resume-local-execution `
+    -RuntimeDirectoryPath 'D:\DeploymentRuntime\deployment-runs\run-...' `
+    -SessionEventPath 'D:\DeploymentRuntime\input\human-approval-event.json' `
+    -Format Json
+```
+
+Der automatisierte Test `tests/ExecutionE2E.Tests.ps1` kopiert das Fixture in ein temporaeres sauberes Git-Repository, startet den lokalen Lauf ueber die CLI bis `waiting-for-human`, reicht ein explizites Human-Decision-Event ein und setzt denselben Runtime-Run bis `completed` fort.
+
 Exit-Codes:
 
 - `0`: Der angeforderte CLI-Vorgang wurde erfolgreich abgeschlossen.
