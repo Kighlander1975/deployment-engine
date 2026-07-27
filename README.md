@@ -380,6 +380,17 @@ Bei zulaessiger lokaler Automation verwendet der Orchestrator die bestehende Ket
 
 Der Orchestrator beendet den Lauf mit `completed`, `failed`, `blocked`, `cancelled`, `waiting-for-human` oder kontrolliert `rejected`. Human Decisions, Human Commands und Review Gates werden nicht automatisch beantwortet; der Lauf pausiert mit `waiting-for-human`. Alle Zwischenartefakte und `reports/execution-summary.json` liegen im erzeugten Runtime-Verzeichnis. V1 ist kein vollstaendiges Deployment, fuehrt kein SSH/SCP aus, nutzt kein Netzwerk, macht kein Git-Staging, keinen Commit, keinen Push, keinen Reset und keinen Rollback.
 
+Ein pausierter lokaler Lauf kann mit einem explizit bereitgestellten Session-Event fortgesetzt werden:
+
+```powershell
+.\tools\deployment-engine\bin\deployment-engine.ps1 resume-local-execution `
+    -RuntimeDirectoryPath 'D:\DeploymentRuntime\deployment-runs\run-...' `
+    -SessionEventPath 'D:\DeploymentRuntime\input\human-decision-event.json' `
+    -Format Json
+```
+
+Resume laedt `input/command-plan.json`, `decisions/command-plan-effective.json`, `reports/execution-summary.json` und den deterministisch letzten Command-Session-Snapshot. Zulaessig ist nur ein vorheriger Status `waiting-for-human` mit passendem Human- oder Review-Current-Item. Unterstuetzt werden ausschliesslich vorhandene Session-Events `human-decision-submitted`, `human-command-result` und `review-result`; das Event muss dieselbe `sessionId` tragen und darf noch nicht in der Event-History enthalten sein. Die Engine erzeugt keine Entscheidung selbst, wendet das Event nur ueber `Apply-CommandSessionEvent` an, archiviert es unter `events/external-session-event-*.json` und schreibt neue Snapshots ohne bestehende Artefakte zu ueberschreiben.
+
 Exit-Codes:
 
 - `0`: Der angeforderte CLI-Vorgang wurde erfolgreich abgeschlossen.

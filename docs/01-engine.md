@@ -396,7 +396,22 @@ Runtime Directory
 
 Bei `dirty` Repository endet der Lauf mit `blocked`, ohne Session, Executor Request, lokale Operation oder Archiv. Bei `requires-human` oder `requires-review` pausiert der Lauf mit `waiting-for-human`; der Orchestrator erzeugt keine Human Decisions, keine Human-Command-Resultate und keine Review-Ergebnisse. Terminale Session-Zustaende `completed`, `failed`, `blocked` und `cancelled` beenden die Schleife.
 
-Der Orchestrator erzeugt keine Executor Requests selbst, veraendert keine Session direkt und manipuliert keine Event-History. Er erzeugt UTC-Zeitstempel fuer Automation Events, ruft die bestehenden Builder und den bestehenden Event-Applier auf und speichert sortierbare Zwischenstaende in `decisions`, `events` und `reports`. V1 unterstuetzt nur lokale Automation ueber `source.validate` und `archive.create`; SSH, SCP, Remote Execution, Netzwerkzugriff, Retry, Resume und Rollback sind nicht Bestandteil.
+Der Orchestrator erzeugt keine Executor Requests selbst, veraendert keine Session direkt und manipuliert keine Event-History. Er erzeugt UTC-Zeitstempel fuer Automation Events, ruft die bestehenden Builder und den bestehenden Event-Applier auf und speichert sortierbare Zwischenstaende in `decisions`, `events` und `reports`. V1 unterstuetzt nur lokale Automation ueber `source.validate` und `archive.create`; SSH, SCP, Remote Execution, Netzwerkzugriff, Retry und Rollback sind nicht Bestandteil.
+
+## Resume Existing Execution Run V1
+
+Resume setzt einen bestehenden lokalen Runtime-Run nach `waiting-for-human` kontrolliert fort. Der Baustein laedt den urspruenglichen Eingabe-Command-Plan, den effektiven Command Plan, die letzte Summary und den deterministisch letzten Command-Session-Snapshot aus dem Runtime-Verzeichnis. Diese Artefakte muessen parsebar sein, zur selben Runtime gehoeren und mit der aktuellen Admission konsistent bleiben.
+
+```text
+Runtime Run
+    -> External Session Event
+    -> Command Session Update
+    -> Execution Orchestrator Loop
+```
+
+Unterstuetzt sind nur die vorhandenen Eventtypen `human-decision-submitted`, `human-command-result` und `review-result`. Das externe Event muss eine passende `sessionId` und eine noch nicht angewendete `eventId` enthalten. Es wird unveraendert unter `events/external-session-event-*.json` archiviert und ausschliesslich mit `Apply-CommandSessionEvent` angewendet; danach wird ein neuer Session-Snapshot gespeichert. Nummerierungen werden aus bestehenden Artefakten fortgesetzt, vorhandene Snapshots werden nicht ueberschrieben.
+
+Resume erzeugt keine Human- oder Review-Entscheidung, startet kein SSH/SCP, nutzt kein Netzwerk, mutiert kein Git und nimmt terminale Sessions nicht wieder auf. Nach erfolgreicher Event-Anwendung wird derselbe interne Execution Loop verwendet wie bei einem frischen lokalen Lauf.
 
 ## Human Gates
 

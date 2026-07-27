@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0, Mandatory = $true)]
-    [ValidateSet('plan', 'discover-tools', 'remote-discovery-plan', 'resolve-remote-discovery', 'assess-tool-inventories', 'evaluate-adapter-eligibility', 'select-adapter', 'build-deployment-strategy', 'generate-commands', 'create-command-session', 'update-command-session', 'evaluate-execution-admission', 'build-executor-request', 'execute-local-operation', 'build-automation-started-event', 'build-automation-result-event', 'create-runtime-directory', 'assess-clean-tree', 'orchestrate-local-execution')]
+    [ValidateSet('plan', 'discover-tools', 'remote-discovery-plan', 'resolve-remote-discovery', 'assess-tool-inventories', 'evaluate-adapter-eligibility', 'select-adapter', 'build-deployment-strategy', 'generate-commands', 'create-command-session', 'update-command-session', 'evaluate-execution-admission', 'build-executor-request', 'execute-local-operation', 'build-automation-started-event', 'build-automation-result-event', 'create-runtime-directory', 'assess-clean-tree', 'orchestrate-local-execution', 'resume-local-execution')]
     [string] $Command,
 
     [string] $Analysis,
@@ -11,6 +11,8 @@ param(
     [string] $ProjectPath,
 
     [string] $RuntimeRootPath,
+
+    [string] $RuntimeDirectoryPath,
 
     [string] $RepositoryPath,
 
@@ -391,6 +393,24 @@ switch ($Command) {
 
         $orchestratorPath = Join-Path -Path $engineRoot -ChildPath 'src/ps1/Invoke-ExecutionOrchestrator.ps1'
         & $orchestratorPath -CommandPlanPath $CommandPlanPath -SourceRepositoryPath $SourceRepositoryPath -RuntimeRootPath $RuntimeRootPath -MaxAutomationSteps $MaxAutomationSteps -Format Json -OutputPath $OutputPath
+        exit 0
+    }
+    'resume-local-execution' {
+        if ([string]::IsNullOrWhiteSpace($Format)) {
+            $Format = 'Json'
+        }
+        if ($Format -ne 'Json') {
+            throw "resume-local-execution only supports -Format Json."
+        }
+        if ([string]::IsNullOrWhiteSpace($RuntimeDirectoryPath)) {
+            throw "Missing required parameter for 'resume-local-execution': -RuntimeDirectoryPath"
+        }
+        if ([string]::IsNullOrWhiteSpace($SessionEventPath)) {
+            throw "Missing required parameter for 'resume-local-execution': -SessionEventPath"
+        }
+
+        $orchestratorPath = Join-Path -Path $engineRoot -ChildPath 'src/ps1/Invoke-ExecutionOrchestrator.ps1'
+        & $orchestratorPath -Operation Resume -RuntimeDirectoryPath $RuntimeDirectoryPath -SessionEventPath $SessionEventPath -MaxAutomationSteps $MaxAutomationSteps -Format Json -OutputPath $OutputPath
         exit 0
     }
 }

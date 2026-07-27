@@ -3,9 +3,13 @@ param(
     [string] $CommandPlanPath,
     [string] $SourceRepositoryPath,
     [string] $RuntimeRootPath,
+    [string] $RuntimeDirectoryPath,
+    [string] $SessionEventPath,
     [int] $MaxAutomationSteps = 50,
     [string] $OutputPath,
     [string] $Format = 'Json',
+    [ValidateSet('Start', 'Resume')]
+    [string] $Operation = 'Start',
     [switch] $ModuleOnly
 )
 
@@ -15,9 +19,12 @@ $ErrorActionPreference = 'Stop'
 $orchestratorEntryCommandPlanPath = $CommandPlanPath
 $orchestratorEntrySourceRepositoryPath = $SourceRepositoryPath
 $orchestratorEntryRuntimeRootPath = $RuntimeRootPath
+$orchestratorEntryRuntimeDirectoryPath = $RuntimeDirectoryPath
+$orchestratorEntrySessionEventPath = $SessionEventPath
 $orchestratorEntryMaxAutomationSteps = $MaxAutomationSteps
 $orchestratorEntryOutputPath = $OutputPath
 $orchestratorEntryFormat = $Format
+$orchestratorEntryOperation = $Operation
 $orchestratorEntryModuleOnly = $ModuleOnly
 . (Join-Path -Path $PSScriptRoot -ChildPath 'New-RuntimeDirectory.ps1') -ModuleOnly
 . (Join-Path -Path $PSScriptRoot -ChildPath 'Test-CleanTree.ps1') -ModuleOnly
@@ -28,9 +35,12 @@ $orchestratorEntryModuleOnly = $ModuleOnly
 $CommandPlanPath = $orchestratorEntryCommandPlanPath
 $SourceRepositoryPath = $orchestratorEntrySourceRepositoryPath
 $RuntimeRootPath = $orchestratorEntryRuntimeRootPath
+$RuntimeDirectoryPath = $orchestratorEntryRuntimeDirectoryPath
+$SessionEventPath = $orchestratorEntrySessionEventPath
 $MaxAutomationSteps = $orchestratorEntryMaxAutomationSteps
 $OutputPath = $orchestratorEntryOutputPath
 $Format = $orchestratorEntryFormat
+$Operation = $orchestratorEntryOperation
 $ModuleOnly = $orchestratorEntryModuleOnly
 
 function Resolve-OrchestratorPath {
@@ -72,11 +82,22 @@ function Write-OrchestratorJson {
     if (-not [string]::IsNullOrWhiteSpace($RuntimeDirectory) -and -not (Test-OrchestratorPathWithinDirectory -Path $resolved -Directory $RuntimeDirectory)) {
         throw "Execution orchestrator validation failed: output path must be inside runtime directory: $resolved"
     }
+    if (-not [string]::IsNullOrWhiteSpace($RuntimeDirectory) -and (Test-Path -LiteralPath $resolved -PathType Leaf)) {
+        throw "Execution orchestrator validation failed: refusing to overwrite existing artifact: $resolved"
+    }
     $directory = Split-Path -Path $resolved -Parent
     if (-not [string]::IsNullOrWhiteSpace($directory)) { New-Item -ItemType Directory -Path $directory -Force | Out-Null }
     $json = $Value | ConvertTo-Json -Depth 100
     $json | Set-Content -LiteralPath $resolved -Encoding utf8
     return $json
+}
+
+function Set-OrchestratorSummaryJson {
+    param([Parameter(Mandatory = $true)][object] $Summary, [Parameter(Mandatory = $true)][object] $Runtime, [string] $OutputPath)
+    $summaryPath = Join-Path -Path $Runtime.reportsDirectory -ChildPath 'execution-summary.json'
+    $json = $Summary | ConvertTo-Json -Depth 100
+    $json | Set-Content -LiteralPath $summaryPath -Encoding utf8
+    if (-not [string]::IsNullOrWhiteSpace($OutputPath)) { Write-OrchestratorJson -Value $Summary -Path $OutputPath | Out-Null }
 }
 
 function Get-OrchestratorTimestamp {
@@ -90,6 +111,8 @@ function New-OrchestratorResult {
         [object] $Session = $null,
         [int] $ExecutedAutomationCount = 0,
         [bool] $HumanActionRequired = $false,
+        [bool] $Resumed = $false,
+        [string] $AppliedExternalEventId = '',
         [string] $Diagnostic = ''
     )
     return [pscustomobject]@{
@@ -100,9 +123,40 @@ function New-OrchestratorResult {
         sessionId = if ($null -ne $Session -and (Test-OrchestratorProperty -Object $Session -Name 'sessionId')) { [string] $Session.sessionId } else { '' }
         sessionStatus = if ($null -ne $Session -and (Test-OrchestratorProperty -Object $Session -Name 'status')) { [string] $Session.status } else { '' }
         currentItemId = if ($null -ne $Session -and (Test-OrchestratorProperty -Object $Session -Name 'currentItemId')) { [string] $Session.currentItemId } else { '' }
+        resumed = $Resumed
+        appliedExternalEventId = $AppliedExternalEventId
         executedAutomationCount = $ExecutedAutomationCount
         humanActionRequired = $HumanActionRequired
         diagnostic = $Diagnostic
+    }
+}
+
+function New-OrchestratorRuntimeFromDirectory {
+    param([Parameter(Mandatory = $true)][string] $RuntimeDirectoryPath)
+    $runtimeDirectory = Resolve-OrchestratorPath -Path $RuntimeDirectoryPath
+    if (-not (Test-Path -LiteralPath $runtimeDirectory -PathType Container)) {
+        throw "Execution resume validation failed: runtime directory does not exist: $runtimeDirectory"
+    }
+    $subdirs = @('artifacts', 'decisions', 'events', 'input', 'inventory', 'logs', 'reports')
+    foreach ($subdir in $subdirs) {
+        $path = Join-Path -Path $runtimeDirectory -ChildPath $subdir
+        if (-not (Test-Path -LiteralPath $path -PathType Container)) {
+            throw "Execution resume validation failed: runtime subdirectory is missing: $subdir"
+        }
+    }
+    return [pscustomobject]@{
+        schemaVersion = '0.1'
+        runtimeType = 'deployment-runtime-directory'
+        runId = Split-Path -Path $runtimeDirectory -Leaf
+        runtimeRootDirectory = Split-Path -Path $runtimeDirectory -Parent
+        runtimeDirectory = $runtimeDirectory
+        artifactsDirectory = Join-Path -Path $runtimeDirectory -ChildPath 'artifacts'
+        decisionsDirectory = Join-Path -Path $runtimeDirectory -ChildPath 'decisions'
+        eventsDirectory = Join-Path -Path $runtimeDirectory -ChildPath 'events'
+        inputDirectory = Join-Path -Path $runtimeDirectory -ChildPath 'input'
+        inventoryDirectory = Join-Path -Path $runtimeDirectory -ChildPath 'inventory'
+        logsDirectory = Join-Path -Path $runtimeDirectory -ChildPath 'logs'
+        reportsDirectory = Join-Path -Path $runtimeDirectory -ChildPath 'reports'
     }
 }
 
@@ -137,6 +191,171 @@ function Get-OrchestratorFinalStatus {
     return 'blocked'
 }
 
+function Get-OrchestratorNextArtifactIndex {
+    param([Parameter(Mandatory = $true)][object] $Runtime)
+    $max = 0
+    foreach ($directory in @($Runtime.decisionsDirectory, $Runtime.eventsDirectory)) {
+        foreach ($file in @(Get-ChildItem -LiteralPath $directory -File -ErrorAction SilentlyContinue)) {
+            if ($file.Name -match '-(\d{4})(?:[-.]|\.json$)') {
+                $value = [int] $Matches[1]
+                if ($value -gt $max) { $max = $value }
+            }
+        }
+    }
+    return ($max + 1)
+}
+
+function Get-OrchestratorLatestSessionSnapshot {
+    param([Parameter(Mandatory = $true)][object] $Runtime)
+    $entries = @()
+    foreach ($file in @(Get-ChildItem -LiteralPath $Runtime.decisionsDirectory -File -Filter 'command-session-*.json' -ErrorAction SilentlyContinue)) {
+        if ($file.Name -match '^command-session-(\d{4})(?:-(started|external|result))?\.json$') {
+            $suffix = if ($Matches.Count -gt 2) { [string] $Matches[2] } else { '' }
+            $rank = switch ($suffix) {
+                'started' { 1 }
+                'external' { 2 }
+                'result' { 3 }
+                default { 0 }
+            }
+            $entries += [pscustomobject]@{ path = $file.FullName; index = [int] $Matches[1]; rank = $rank }
+        }
+    }
+    if ($entries.Count -eq 0) { throw 'Execution resume validation failed: no command-session snapshot found.' }
+    $latest = @($entries | Sort-Object index, rank, path | Select-Object -Last 1)[0]
+    return Read-OrchestratorJsonFile -Path ([string] $latest.path) -Description 'Command session snapshot'
+}
+
+function Get-OrchestratorNextExternalEventIndex {
+    param([Parameter(Mandatory = $true)][object] $Runtime)
+    $max = 0
+    foreach ($file in @(Get-ChildItem -LiteralPath $Runtime.eventsDirectory -File -Filter 'external-session-event-*.json' -ErrorAction SilentlyContinue)) {
+        if ($file.Name -match '^external-session-event-(\d{4})\.json$') {
+            $value = [int] $Matches[1]
+            if ($value -gt $max) { $max = $value }
+        }
+    }
+    return ($max + 1)
+}
+
+function Get-OrchestratorInteger {
+    param([object] $Object, [string] $Name, [int] $Default = 0)
+    if ($null -eq $Object -or -not (Test-OrchestratorProperty -Object $Object -Name $Name)) { return $Default }
+    return [int] $Object.$Name
+}
+
+function Assert-OrchestratorResumeEvent {
+    param([Parameter(Mandatory = $true)][object] $Event, [Parameter(Mandatory = $true)][object] $Session)
+    if (-not (Test-OrchestratorProperty -Object $Event -Name 'eventType')) {
+        throw "Execution resume validation failed: external event is missing eventType."
+    }
+    if ([string] $Event.eventType -notin @('human-decision-submitted', 'human-command-result', 'review-result')) {
+        throw "Execution resume validation failed: unsupported external event type '$($Event.eventType)'."
+    }
+    if (-not (Test-OrchestratorProperty -Object $Event -Name 'sessionId') -or [string]::IsNullOrWhiteSpace([string] $Event.sessionId)) {
+        throw 'Execution resume validation failed: external event must contain sessionId.'
+    }
+    if ([string] $Event.sessionId -ne [string] $Session.sessionId) {
+        throw 'Execution resume validation failed: external event sessionId does not match command session.'
+    }
+    if (-not (Test-OrchestratorProperty -Object $Event -Name 'eventId') -or [string]::IsNullOrWhiteSpace([string] $Event.eventId)) {
+        throw 'Execution resume validation failed: external event must contain eventId.'
+    }
+    if (@($Session.eventHistory | Where-Object { [string] $_.eventId -eq [string] $Event.eventId }).Count -gt 0) {
+        throw "Execution resume validation failed: external eventId '$($Event.eventId)' was already applied."
+    }
+}
+
+function Assert-OrchestratorResumePreconditions {
+    param(
+        [Parameter(Mandatory = $true)][object] $Runtime,
+        [Parameter(Mandatory = $true)][object] $CommandPlan,
+        [Parameter(Mandatory = $true)][object] $Summary,
+        [Parameter(Mandatory = $true)][object] $Session
+    )
+    $summaryRuntime = if (Test-OrchestratorProperty -Object $Summary -Name 'runtimeDirectory') { Resolve-OrchestratorPath -Path ([string] $Summary.runtimeDirectory) } else { '' }
+    if ($summaryRuntime -ne [string] $Runtime.runtimeDirectory) {
+        throw 'Execution resume validation failed: summary does not belong to this runtime directory.'
+    }
+    if (-not (Test-OrchestratorProperty -Object $Summary -Name 'status') -or [string] $Summary.status -ne 'waiting-for-human') {
+        throw 'Execution resume validation failed: previous orchestrator status must be waiting-for-human.'
+    }
+    if ([string] $Session.status -in @('completed', 'failed', 'blocked', 'cancelled')) {
+        throw "Execution resume validation failed: terminal command session '$($Session.status)' cannot be resumed."
+    }
+    if (-not (Test-OrchestratorProperty -Object $Summary -Name 'sessionId') -or [string] $Summary.sessionId -ne [string] $Session.sessionId) {
+        throw 'Execution resume validation failed: summary sessionId does not match latest command session.'
+    }
+    if (-not (Test-OrchestratorProperty -Object $Summary -Name 'currentItemId') -or [string] $Summary.currentItemId -ne [string] $Session.currentItemId) {
+        throw 'Execution resume validation failed: summary currentItemId does not match latest command session.'
+    }
+    $admission = Resolve-ExecutionAdmission -CommandPlan $CommandPlan -CommandSession $Session
+    if ($admission.status -notin @('requires-human', 'requires-review')) {
+        throw "Execution resume validation failed: latest session does not expect human or review input; admission status is '$($admission.status)'."
+    }
+}
+
+function Invoke-OrchestratorExecutionLoop {
+    param(
+        [Parameter(Mandatory = $true)][object] $CommandPlan,
+        [Parameter(Mandatory = $true)][object] $CommandSession,
+        [Parameter(Mandatory = $true)][object] $Runtime,
+        [int] $StartIndex = 1,
+        [int] $MaxAutomationSteps = 50,
+        [int] $ExecutedAutomationCount = 0,
+        [bool] $Resumed = $false,
+        [string] $AppliedExternalEventId = ''
+    )
+    $session = $CommandSession
+    $executed = $ExecutedAutomationCount
+    $summary = $null
+    for ($step = $StartIndex; $step -le ($StartIndex + $MaxAutomationSteps); $step++) {
+        $admission = Resolve-ExecutionAdmission -CommandPlan $CommandPlan -CommandSession $session
+        Write-OrchestratorJson -Value $admission -Path (Join-Path -Path $Runtime.decisionsDirectory -ChildPath ('execution-admission-{0:0000}.json' -f $step)) -RuntimeDirectory $Runtime.runtimeDirectory | Out-Null
+
+        if ($session.status -in @('completed', 'failed', 'blocked', 'cancelled')) {
+            $summary = New-OrchestratorResult -Status (Get-OrchestratorFinalStatus -SessionStatus ([string] $session.status)) -Runtime $Runtime -Session $session -ExecutedAutomationCount $executed -Resumed:$Resumed -AppliedExternalEventId $AppliedExternalEventId
+            break
+        }
+
+        if ($admission.status -in @('requires-human', 'requires-review')) {
+            $summary = New-OrchestratorResult -Status 'waiting-for-human' -Runtime $Runtime -Session $session -ExecutedAutomationCount $executed -HumanActionRequired:$true -Resumed:$Resumed -AppliedExternalEventId $AppliedExternalEventId -Diagnostic "Execution paused because admission status is '$($admission.status)'."
+            break
+        }
+
+        if ($admission.status -ne 'eligible-but-disabled') {
+            $summary = New-OrchestratorResult -Status 'blocked' -Runtime $Runtime -Session $session -ExecutedAutomationCount $executed -Resumed:$Resumed -AppliedExternalEventId $AppliedExternalEventId -Diagnostic "Execution paused because admission status is '$($admission.status)'."
+            break
+        }
+
+        if ($executed -ge $MaxAutomationSteps) {
+            $summary = New-OrchestratorResult -Status 'failed' -Runtime $Runtime -Session $session -ExecutedAutomationCount $executed -Resumed:$Resumed -AppliedExternalEventId $AppliedExternalEventId -Diagnostic 'MaxAutomationSteps limit reached before the next automation could start.'
+            break
+        }
+
+        $request = Resolve-ExecutorRequest -CommandPlan $CommandPlan -CommandSession $session -ExecutionAdmission $admission
+        Write-OrchestratorJson -Value $request -Path (Join-Path -Path $Runtime.decisionsDirectory -ChildPath ('executor-request-{0:0000}.json' -f $step)) -RuntimeDirectory $Runtime.runtimeDirectory | Out-Null
+
+        $startedEvent = Build-AutomationStartedEvent -CommandSession $session -ExecutorRequest $request -Timestamp (Get-OrchestratorTimestamp)
+        Write-OrchestratorJson -Value $startedEvent -Path (Join-Path -Path $Runtime.eventsDirectory -ChildPath ('automation-started-{0:0000}.json' -f $step)) -RuntimeDirectory $Runtime.runtimeDirectory | Out-Null
+        $runningSession = Apply-CommandSessionEvent -CommandSession $session -Event $startedEvent
+        Write-OrchestratorJson -Value $runningSession -Path (Join-Path -Path $Runtime.decisionsDirectory -ChildPath ('command-session-{0:0000}-started.json' -f $step)) -RuntimeDirectory $Runtime.runtimeDirectory | Out-Null
+
+        $executorResult = Invoke-LocalOperationRequest -ExecutorRequest $request
+        Write-OrchestratorJson -Value $executorResult -Path (Join-Path -Path $Runtime.decisionsDirectory -ChildPath ('executor-result-{0:0000}.json' -f $step)) -RuntimeDirectory $Runtime.runtimeDirectory | Out-Null
+
+        $resultEvent = Build-AutomationResultEvent -CommandSession $runningSession -ExecutorRequest $request -ExecutorResult $executorResult -Timestamp (Get-OrchestratorTimestamp)
+        Write-OrchestratorJson -Value $resultEvent -Path (Join-Path -Path $Runtime.eventsDirectory -ChildPath ('automation-result-{0:0000}.json' -f $step)) -RuntimeDirectory $Runtime.runtimeDirectory | Out-Null
+        $session = Apply-CommandSessionEvent -CommandSession $runningSession -Event $resultEvent
+        Write-OrchestratorJson -Value $session -Path (Join-Path -Path $Runtime.decisionsDirectory -ChildPath ('command-session-{0:0000}-result.json' -f $step)) -RuntimeDirectory $Runtime.runtimeDirectory | Out-Null
+        $executed++
+    }
+
+    if ($null -eq $summary) {
+        $summary = New-OrchestratorResult -Status 'failed' -Runtime $Runtime -Session $session -ExecutedAutomationCount $executed -Resumed:$Resumed -AppliedExternalEventId $AppliedExternalEventId -Diagnostic 'Execution loop ended without a terminal or pause state.'
+    }
+    return $summary
+}
+
 function Invoke-LocalExecutionOrchestrator {
     param(
         [Parameter(Mandatory = $true)][string] $CommandPlanPath,
@@ -162,8 +381,7 @@ function Invoke-LocalExecutionOrchestrator {
         Write-OrchestratorJson -Value $cleanTree -Path (Join-Path -Path $runtime.decisionsDirectory -ChildPath 'clean-tree-assessment.json') -RuntimeDirectory $runtime.runtimeDirectory | Out-Null
         if (-not [bool] $cleanTree.deploymentAllowed) {
             $summary = New-OrchestratorResult -Status 'blocked' -Runtime $runtime -Diagnostic 'Clean-Tree Assessment blocked local execution.'
-            Write-OrchestratorJson -Value $summary -Path (Join-Path -Path $runtime.reportsDirectory -ChildPath 'execution-summary.json') -RuntimeDirectory $runtime.runtimeDirectory | Out-Null
-            if (-not [string]::IsNullOrWhiteSpace($OutputPath)) { Write-OrchestratorJson -Value $summary -Path $OutputPath | Out-Null }
+            Set-OrchestratorSummaryJson -Summary $summary -Runtime $runtime -OutputPath $OutputPath
             return $summary | ConvertTo-Json -Depth 100
         }
 
@@ -172,66 +390,75 @@ function Invoke-LocalExecutionOrchestrator {
         $session = New-CommandSession -CommandPlan $effectivePlan
         Write-OrchestratorJson -Value $session -Path (Join-Path -Path $runtime.decisionsDirectory -ChildPath 'command-session-0000.json') -RuntimeDirectory $runtime.runtimeDirectory | Out-Null
 
-        for ($step = 1; $step -le ($MaxAutomationSteps + 1); $step++) {
-            $admission = Resolve-ExecutionAdmission -CommandPlan $effectivePlan -CommandSession $session
-            Write-OrchestratorJson -Value $admission -Path (Join-Path -Path $runtime.decisionsDirectory -ChildPath ('execution-admission-{0:0000}.json' -f $step)) -RuntimeDirectory $runtime.runtimeDirectory | Out-Null
-
-            if ($session.status -in @('completed', 'failed', 'blocked', 'cancelled')) {
-                $summary = New-OrchestratorResult -Status (Get-OrchestratorFinalStatus -SessionStatus ([string] $session.status)) -Runtime $runtime -Session $session -ExecutedAutomationCount $executedAutomationCount
-                break
-            }
-
-            if ($admission.status -in @('requires-human', 'requires-review')) {
-                $summary = New-OrchestratorResult -Status 'waiting-for-human' -Runtime $runtime -Session $session -ExecutedAutomationCount $executedAutomationCount -HumanActionRequired:$true -Diagnostic "Execution paused because admission status is '$($admission.status)'."
-                break
-            }
-
-            if ($admission.status -ne 'eligible-but-disabled') {
-                $summary = New-OrchestratorResult -Status 'blocked' -Runtime $runtime -Session $session -ExecutedAutomationCount $executedAutomationCount -Diagnostic "Execution paused because admission status is '$($admission.status)'."
-                break
-            }
-
-            if ($executedAutomationCount -ge $MaxAutomationSteps) {
-                $summary = New-OrchestratorResult -Status 'failed' -Runtime $runtime -Session $session -ExecutedAutomationCount $executedAutomationCount -Diagnostic "MaxAutomationSteps limit reached before the next automation could start."
-                break
-            }
-
-            $request = Resolve-ExecutorRequest -CommandPlan $effectivePlan -CommandSession $session -ExecutionAdmission $admission
-            Write-OrchestratorJson -Value $request -Path (Join-Path -Path $runtime.decisionsDirectory -ChildPath ('executor-request-{0:0000}.json' -f $step)) -RuntimeDirectory $runtime.runtimeDirectory | Out-Null
-
-            $startedEvent = Build-AutomationStartedEvent -CommandSession $session -ExecutorRequest $request -Timestamp (Get-OrchestratorTimestamp)
-            Write-OrchestratorJson -Value $startedEvent -Path (Join-Path -Path $runtime.eventsDirectory -ChildPath ('automation-started-{0:0000}.json' -f $step)) -RuntimeDirectory $runtime.runtimeDirectory | Out-Null
-            $runningSession = Apply-CommandSessionEvent -CommandSession $session -Event $startedEvent
-            Write-OrchestratorJson -Value $runningSession -Path (Join-Path -Path $runtime.decisionsDirectory -ChildPath ('command-session-{0:0000}-started.json' -f $step)) -RuntimeDirectory $runtime.runtimeDirectory | Out-Null
-
-            $executorResult = Invoke-LocalOperationRequest -ExecutorRequest $request
-            Write-OrchestratorJson -Value $executorResult -Path (Join-Path -Path $runtime.decisionsDirectory -ChildPath ('executor-result-{0:0000}.json' -f $step)) -RuntimeDirectory $runtime.runtimeDirectory | Out-Null
-
-            $resultEvent = Build-AutomationResultEvent -CommandSession $runningSession -ExecutorRequest $request -ExecutorResult $executorResult -Timestamp (Get-OrchestratorTimestamp)
-            Write-OrchestratorJson -Value $resultEvent -Path (Join-Path -Path $runtime.eventsDirectory -ChildPath ('automation-result-{0:0000}.json' -f $step)) -RuntimeDirectory $runtime.runtimeDirectory | Out-Null
-            $session = Apply-CommandSessionEvent -CommandSession $runningSession -Event $resultEvent
-            Write-OrchestratorJson -Value $session -Path (Join-Path -Path $runtime.decisionsDirectory -ChildPath ('command-session-{0:0000}-result.json' -f $step)) -RuntimeDirectory $runtime.runtimeDirectory | Out-Null
-            $executedAutomationCount++
-        }
-
-        if ($null -eq $summary) {
-            $summary = New-OrchestratorResult -Status 'failed' -Runtime $runtime -Session $session -ExecutedAutomationCount $executedAutomationCount -Diagnostic 'Execution loop ended without a terminal or pause state.'
-        }
+        $summary = Invoke-OrchestratorExecutionLoop -CommandPlan $effectivePlan -CommandSession $session -Runtime $runtime -StartIndex 1 -MaxAutomationSteps $MaxAutomationSteps -ExecutedAutomationCount $executedAutomationCount
     } catch {
         $status = if ($null -eq $runtime) { 'rejected' } else { 'failed' }
         $summary = New-OrchestratorResult -Status $status -Runtime $runtime -Session $session -ExecutedAutomationCount $executedAutomationCount -Diagnostic $_.Exception.Message
     }
 
-    if ($null -ne $runtime) {
-        Write-OrchestratorJson -Value $summary -Path (Join-Path -Path $runtime.reportsDirectory -ChildPath 'execution-summary.json') -RuntimeDirectory $runtime.runtimeDirectory | Out-Null
+    if ($null -ne $runtime) { Set-OrchestratorSummaryJson -Summary $summary -Runtime $runtime -OutputPath $OutputPath }
+    elseif (-not [string]::IsNullOrWhiteSpace($OutputPath)) { Write-OrchestratorJson -Value $summary -Path $OutputPath | Out-Null }
+    return $summary | ConvertTo-Json -Depth 100
+}
+
+function Invoke-LocalExecutionResume {
+    param(
+        [Parameter(Mandatory = $true)][string] $RuntimeDirectoryPath,
+        [Parameter(Mandatory = $true)][string] $SessionEventPath,
+        [int] $MaxAutomationSteps = 50,
+        [string] $OutputPath,
+        [string] $Format = 'Json'
+    )
+    if ($Format -ne 'Json') { throw "resume-local-execution only supports -Format Json." }
+    if ($MaxAutomationSteps -lt 0) { throw 'Execution resume validation failed: MaxAutomationSteps must not be negative.' }
+
+    $runtime = $null
+    $session = $null
+    $event = $null
+    $appliedExternalEventId = ''
+    $executedAutomationCount = 0
+    $summary = $null
+    try {
+        $runtime = New-OrchestratorRuntimeFromDirectory -RuntimeDirectoryPath $RuntimeDirectoryPath
+        $inputPlan = Read-OrchestratorJsonFile -Path (Join-Path -Path $runtime.inputDirectory -ChildPath 'command-plan.json') -Description 'Input command plan'
+        $effectivePlan = Read-OrchestratorJsonFile -Path (Join-Path -Path $runtime.decisionsDirectory -ChildPath 'command-plan-effective.json') -Description 'Effective command plan'
+        $previousSummary = Read-OrchestratorJsonFile -Path (Join-Path -Path $runtime.reportsDirectory -ChildPath 'execution-summary.json') -Description 'Execution summary'
+        $session = Get-OrchestratorLatestSessionSnapshot -Runtime $runtime
+        $event = Read-OrchestratorJsonFile -Path $SessionEventPath -Description 'External command session event'
+        $null = $inputPlan
+
+        Assert-OrchestratorResumePreconditions -Runtime $runtime -CommandPlan $effectivePlan -Summary $previousSummary -Session $session
+        Assert-OrchestratorResumeEvent -Event $event -Session $session
+        $appliedExternalEventId = [string] $event.eventId
+
+        $externalIndex = Get-OrchestratorNextExternalEventIndex -Runtime $runtime
+        Write-OrchestratorJson -Value $event -Path (Join-Path -Path $runtime.eventsDirectory -ChildPath ('external-session-event-{0:0000}.json' -f $externalIndex)) -RuntimeDirectory $runtime.runtimeDirectory | Out-Null
+
+        $updatedSession = Apply-CommandSessionEvent -CommandSession $session -Event $event
+        $sessionSnapshotIndex = Get-OrchestratorNextArtifactIndex -Runtime $runtime
+        Write-OrchestratorJson -Value $updatedSession -Path (Join-Path -Path $runtime.decisionsDirectory -ChildPath ('command-session-{0:0000}-external.json' -f $sessionSnapshotIndex)) -RuntimeDirectory $runtime.runtimeDirectory | Out-Null
+
+        $executedAutomationCount = Get-OrchestratorInteger -Object $previousSummary -Name 'executedAutomationCount' -Default 0
+        $startIndex = Get-OrchestratorNextArtifactIndex -Runtime $runtime
+        $summary = Invoke-OrchestratorExecutionLoop -CommandPlan $effectivePlan -CommandSession $updatedSession -Runtime $runtime -StartIndex $startIndex -MaxAutomationSteps $MaxAutomationSteps -ExecutedAutomationCount $executedAutomationCount -Resumed:$true -AppliedExternalEventId $appliedExternalEventId
+    } catch {
+        $summary = New-OrchestratorResult -Status 'rejected' -Runtime $runtime -Session $session -ExecutedAutomationCount $executedAutomationCount -Resumed:$true -AppliedExternalEventId $appliedExternalEventId -Diagnostic $_.Exception.Message
     }
-    if (-not [string]::IsNullOrWhiteSpace($OutputPath)) { Write-OrchestratorJson -Value $summary -Path $OutputPath | Out-Null }
+
+    if ($null -ne $runtime) { Set-OrchestratorSummaryJson -Summary $summary -Runtime $runtime -OutputPath $OutputPath }
+    elseif (-not [string]::IsNullOrWhiteSpace($OutputPath)) { Write-OrchestratorJson -Value $summary -Path $OutputPath | Out-Null }
     return $summary | ConvertTo-Json -Depth 100
 }
 
 if (-not $ModuleOnly) {
-    if ([string]::IsNullOrWhiteSpace($CommandPlanPath)) { throw "Missing required parameter for 'orchestrate-local-execution': -CommandPlanPath" }
-    if ([string]::IsNullOrWhiteSpace($SourceRepositoryPath)) { throw "Missing required parameter for 'orchestrate-local-execution': -SourceRepositoryPath" }
-    if ([string]::IsNullOrWhiteSpace($RuntimeRootPath)) { throw "Missing required parameter for 'orchestrate-local-execution': -RuntimeRootPath" }
-    Invoke-LocalExecutionOrchestrator -CommandPlanPath $CommandPlanPath -SourceRepositoryPath $SourceRepositoryPath -RuntimeRootPath $RuntimeRootPath -MaxAutomationSteps $MaxAutomationSteps -OutputPath $OutputPath -Format $Format
+    if ($Operation -eq 'Resume') {
+        if ([string]::IsNullOrWhiteSpace($RuntimeDirectoryPath)) { throw "Missing required parameter for 'resume-local-execution': -RuntimeDirectoryPath" }
+        if ([string]::IsNullOrWhiteSpace($SessionEventPath)) { throw "Missing required parameter for 'resume-local-execution': -SessionEventPath" }
+        Invoke-LocalExecutionResume -RuntimeDirectoryPath $RuntimeDirectoryPath -SessionEventPath $SessionEventPath -MaxAutomationSteps $MaxAutomationSteps -OutputPath $OutputPath -Format $Format
+    } else {
+        if ([string]::IsNullOrWhiteSpace($CommandPlanPath)) { throw "Missing required parameter for 'orchestrate-local-execution': -CommandPlanPath" }
+        if ([string]::IsNullOrWhiteSpace($SourceRepositoryPath)) { throw "Missing required parameter for 'orchestrate-local-execution': -SourceRepositoryPath" }
+        if ([string]::IsNullOrWhiteSpace($RuntimeRootPath)) { throw "Missing required parameter for 'orchestrate-local-execution': -RuntimeRootPath" }
+        Invoke-LocalExecutionOrchestrator -CommandPlanPath $CommandPlanPath -SourceRepositoryPath $SourceRepositoryPath -RuntimeRootPath $RuntimeRootPath -MaxAutomationSteps $MaxAutomationSteps -OutputPath $OutputPath -Format $Format
+    }
 }
