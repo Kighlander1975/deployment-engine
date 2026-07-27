@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0, Mandatory = $true)]
-    [ValidateSet('plan', 'discover-tools', 'remote-discovery-plan', 'resolve-remote-discovery', 'assess-tool-inventories', 'evaluate-adapter-eligibility', 'select-adapter', 'build-deployment-strategy', 'generate-commands', 'create-command-session', 'update-command-session', 'evaluate-execution-admission')]
+    [ValidateSet('plan', 'discover-tools', 'remote-discovery-plan', 'resolve-remote-discovery', 'assess-tool-inventories', 'evaluate-adapter-eligibility', 'select-adapter', 'build-deployment-strategy', 'generate-commands', 'create-command-session', 'update-command-session', 'evaluate-execution-admission', 'build-executor-request')]
     [string] $Command,
 
     [string] $Analysis,
@@ -33,6 +33,8 @@ param(
     [string] $CommandPlanPath,
 
     [string] $CommandSessionPath,
+
+    [string] $ExecutionAdmissionPath,
 
     [string] $SessionEventPath,
 
@@ -243,6 +245,27 @@ switch ($Command) {
 
         $admissionPath = Join-Path -Path $engineRoot -ChildPath 'src/ps1/Evaluate-ExecutionAdmission.ps1'
         & $admissionPath -CommandPlanPath $CommandPlanPath -CommandSessionPath $CommandSessionPath -Format Json -OutputPath $OutputPath
+        exit 0
+    }
+    'build-executor-request' {
+        if ([string]::IsNullOrWhiteSpace($Format)) {
+            $Format = 'Json'
+        }
+        if ($Format -ne 'Json') {
+            throw "build-executor-request only supports -Format Json."
+        }
+        if ([string]::IsNullOrWhiteSpace($CommandPlanPath)) {
+            throw "Missing required parameter for 'build-executor-request': -CommandPlanPath"
+        }
+        if ([string]::IsNullOrWhiteSpace($CommandSessionPath)) {
+            throw "Missing required parameter for 'build-executor-request': -CommandSessionPath"
+        }
+        if ([string]::IsNullOrWhiteSpace($ExecutionAdmissionPath)) {
+            throw "Missing required parameter for 'build-executor-request': -ExecutionAdmissionPath"
+        }
+
+        $executorRequestPath = Join-Path -Path $engineRoot -ChildPath 'src/ps1/Build-ExecutorRequest.ps1'
+        & $executorRequestPath -CommandPlanPath $CommandPlanPath -CommandSessionPath $CommandSessionPath -ExecutionAdmissionPath $ExecutionAdmissionPath -Format Json -OutputPath $OutputPath
         exit 0
     }
 }

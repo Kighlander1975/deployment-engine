@@ -1,6 +1,6 @@
 # Engine Pipeline
 
-Die Pipeline der Version `0.1` ist bewusst in Analyse, Planerzeugung, Capability-Aufloesung, Tool Discovery, Adapterentscheidung, Deployment Strategy, Command Generation, Command Session, Execution Admission und spaetere Ausfuehrung getrennt.
+Die Pipeline der Version `0.1` ist bewusst in Analyse, Planerzeugung, Capability-Aufloesung, Tool Discovery, Adapterentscheidung, Deployment Strategy, Command Generation, Command Session, Execution Admission, Executor Request und spaetere Ausfuehrung getrennt.
 
 ## Project Detection
 
@@ -65,7 +65,7 @@ Der Resolver fuehrt keine Aktionen aus. Er trifft keine automatische Adapterwahl
 
 Deployment-Laufzeitdaten und erzeugte Artefakte werden ausserhalb des Deployment-Engine-Repositories und des zu deployenden Projekt-Repositories abgelegt. Jeder Deployment-Lauf erhaelt ein eigenes externes Run-Verzeichnis.
 
-Spaetere Laufdaten koennen beispielsweise Inventare, Assessments, Entscheidungen, Strategien, Command Plans, Command Sessions, Execution Admissions, Archive, Logs und Reports umfassen. Adapter Eligibility Evaluation, Adapter Selection, Deployment Strategy, Command Generation, Command Session und Execution Admission schreiben weiterhin nur dann eine Datei, wenn explizit `-OutputPath` uebergeben wurde.
+Spaetere Laufdaten koennen beispielsweise Inventare, Assessments, Entscheidungen, Strategien, Command Plans, Command Sessions, Execution Admissions, Executor Requests, Archive, Logs und Reports umfassen. Adapter Eligibility Evaluation, Adapter Selection, Deployment Strategy, Command Generation, Command Session, Execution Admission und Executor Request schreiben weiterhin nur dann eine Datei, wenn explizit `-OutputPath` uebergeben wurde.
 
 Vor einem spaeteren automatischen Deployment wird der Arbeitsbaum des zu deployenden Projekts geprueft. In V1 blockieren sichtbare Aenderungen aus `git status --porcelain` den automatischen Deploy.
 
@@ -302,6 +302,7 @@ Execution Admission ist eine rein analytische Zulassungsschicht nach Command Pla
 Command Plan
     + Command Session
     -> Execution Admission
+    -> Executor Request
     -> spaeterer Local Executor
 ```
 
@@ -316,6 +317,24 @@ Lokale Automation kann nur dann `eligible-but-disabled` werden, wenn `actor = au
 Human Commands und Human Decisions ergeben `requires-human`; Review Items ergeben `requires-review`. SSH-, SCP-, Remote- und Local-to-Remote-Eintraege werden niemals automatisch zugelassen und bleiben Copy-and-Run beziehungsweise Human Interaction. Der Handoff beschreibt nur den erwarteten naechsten Event-Typ, etwa `automation-started` und `automation-result` fuer spaetere lokale Automation oder `human-command-started` und `human-command-result` fuer manuelle Commands.
 
 Jedes Ergebnis enthaelt eine konstante Execution Policy mit `productiveExecutionAllowed = false`, `processStartAllowed = false`, `networkAccessAllowed = false` und `remoteExecutionAllowed = false`. Execution Admission startet keine Prozesse, baut keine Netzwerkverbindungen auf, archiviert nichts, uebertraegt keine Dateien, liest keine Umgebungsvariablen und fuehrt kein Deployment aus.
+
+## Executor Request
+
+Executor Request ist ein sicherer Vertragsbaustein nach Execution Admission und vor einem spaeteren Local Operation Executor.
+
+```text
+Command Plan
+    + Command Session
+    + Execution Admission
+    -> Executor Request
+    -> spaeterer Local Operation Executor
+```
+
+Die Phase erzeugt nur dann ein Request-Objekt, wenn die Admission exakt zu Command Plan und Command Session passt, `status = eligible-but-disabled`, `executionEligible = true` und `executionAdmitted = false` enthaelt und das aktuelle Session-Item weiterhin `ready` ist. Zulaessig sind nur lokale Automation-Items mit `executionLocation = local`, `executionMode = automatic` und `program = local-operation`; Human Commands, Remote-Ausfuehrung, SSH, SCP und aktivierte Plan-Ausfuehrung werden kontrolliert abgelehnt.
+
+Das Ergebnis ist deterministisch, hat `executorRequestType = deployment-executor-request` und bleibt `status = disabled`. Es enthaelt `program`, `arguments`, `renderedCommand`, `workingDirectory`, eine leere beziehungsweise strukturierte Umgebung, eine deaktivierte Execution Policy und die erwarteten Event-Typen `automation-started` und `automation-result`.
+
+Executor Request startet keine Prozesse, baut kein Netzwerk auf, erzeugt keine Events, wendet keine Events an, veraendert keine Command Session und fuehrt kein Deployment aus. Secret-artige Inhalte in den validierten Eingaben werden abgelehnt. Der echte ausfuehrende Baustein bleibt ein spaeterer Local Operation Executor.
 
 ## Human Gates
 

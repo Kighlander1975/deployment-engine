@@ -27,6 +27,7 @@ Analyzer
     -> Command Generation
     -> Command Session
     -> Execution Admission
+    -> Executor Request
     -> spaeterer Executor
 ```
 
@@ -58,6 +59,8 @@ Command Session trennt den Command Plan vom spaeteren Laufzeitstatus. Sie erzeug
 
 Execution Admission ist die letzte analytische Sicherheitsbarriere vor einem spaeteren Local Executor. Sie liest Command Plan und Command Session, validiert zuerst die vollstaendige Plan-/Session-Konsistenz und Event-History, bewertet danach ausschliesslich `currentItemId` und erzeugt eine deterministische Zulassungsentscheidung. In V1 kann lokale Automation nur `eligible-but-disabled` werden; `admitted` wird erst mit einem spaeteren Executor und expliziter Ausfuehrungsfreigabe eingefuehrt.
 
+Executor Request ueberfuehrt eine freigegebene, aber weiterhin deaktivierte Execution Admission in einen validierten Vertrag fuer einen spaeteren Local Operation Executor. Der Request bleibt `status = disabled`, erlaubt keinen Prozessstart, keinen Netzwerkzugriff und keine Remote-Ausfuehrung und veraendert weder Command Session noch Events.
+
 ## Unterstuetzter Umfang in Version 0.1
 
 - Projektmanifest lesen und validieren
@@ -78,6 +81,7 @@ Execution Admission ist die letzte analytische Sicherheitsbarriere vor einem spa
 - Command Generation mit strukturiertem Command Model und `executionAllowed = false`
 - Command Session mit eventbasiertem Statusmodell ohne Ausfuehrung oder automatische Freigabe
 - Execution Admission als analytische Zulassungsschicht mit `eligible-but-disabled`, ohne Prozessstart und ohne Netzwerkzugriff
+- Executor Request als deaktivierter Vertrag fuer lokale Automation, ohne Executor-Ausfuehrung
 - Agent-, Human- und Review-Schritte unterscheiden
 - verbindliche Pausepunkte, Abhaengigkeiten und Validierungsanforderungen modellieren
 - Migrationen als High-Risk-Schritte mit Safety Review, `migrate:status` und ausdruecklicher Freigabe modellieren
@@ -286,6 +290,20 @@ Execution Admission prueft den gesamten Command Plan und die gesamte Command Ses
 In V1 wird ausschliesslich lokale Automation mit `actor = automation`, `executionLocation = local`, `executionMode = automatic`, `program = local-operation` und Item-Status `ready` als `eligible-but-disabled` markiert. `executionEligible = true` bedeutet dabei nur fachliche Eignung fuer einen spaeteren lokalen Executor; `executionAdmitted` bleibt immer `false`.
 
 Human Decisions und Human Commands ergeben `requires-human`, Review Items ergeben `requires-review`. Remote-Ausfuehrung, SSH, SCP und lokale-zu-remote Schritte werden niemals automatisch zugelassen. Die Ausgabe enthaelt eine konstante `executionPolicy` mit `productiveExecutionAllowed = false`, `processStartAllowed = false`, `networkAccessAllowed = false` und `remoteExecutionAllowed = false`. Die Phase erzeugt keine Events, startet keine Prozesse, baut kein Netzwerk auf, veraendert keine Session und fuehrt kein Deployment aus. Der Status `admitted` wird erst mit dem spaeteren Executor eingefuehrt.
+
+## Executor Request erzeugen
+
+```powershell
+.\tools\deployment-engine\bin\deployment-engine.ps1 build-executor-request `
+    -CommandPlanPath (Join-Path $runPath 'decisions\command-plan.json') `
+    -CommandSessionPath (Join-Path $runPath 'decisions\command-session.json') `
+    -ExecutionAdmissionPath (Join-Path $runPath 'decisions\execution-admission.json') `
+    -OutputPath (Join-Path $runPath 'decisions\executor-request.json')
+```
+
+Der Executor Request liest Command Plan, Command Session und Execution Admission und validiert, dass alle drei Artefakte dasselbe aktuelle lokale Automation-Item referenzieren. Er wird nur fuer `eligible-but-disabled` mit `executionEligible = true` und `executionAdmitted = false` erzeugt. Human Commands, Remote-Ausfuehrung, SSH, SCP, aktivierte Plan-Ausfuehrung, nicht mehr bereite Items, inkonsistente IDs und secret-artige Inhalte werden kontrolliert abgelehnt.
+
+Das Ergebnis ist ein deterministisches JSON-Objekt mit `executorRequestType = deployment-executor-request` und `status = disabled`. Es beschreibt den spaeter erwarteten `local-operation`-Vertrag inklusive `expectedEvents`, startet aber keinen Prozess, erzeugt keine Events, mutiert keine Session, verwendet kein Netzwerk und fuehrt kein Deployment aus.
 
 Exit-Codes:
 
