@@ -22,6 +22,7 @@ Analyzer
     -> Tool Inventory Assessment
     -> Assessed Tool Inventory
     -> Adapter Eligibility Evaluation
+    -> Adapter Selection
     -> spaeterer Executor
 ```
 
@@ -43,6 +44,8 @@ Tool Inventory Assessment fuehrt vorhandene Local- und Remote-Inventare analytis
 
 Adapter Eligibility Evaluation bewertet aus einem Assessed Tool Inventory, welche bekannten Deployment-Adapter ihre Voraussetzungen erfuellen. Sie trifft keine finale Adapterauswahl, erzeugt keine Befehle und fuehrt nichts aus.
 
+Adapter Selection liest ausschliesslich das Eligibility-Ergebnis und waehlt deterministisch genau einen eligible Adapter aus, sofern eine Auswahl moeglich ist. Sie bewertet keine Tool-Verfuegbarkeit neu, erzeugt keine Commands und fuehrt nichts aus.
+
 ## Unterstuetzter Umfang in Version 0.1
 
 - Projektmanifest lesen und validieren
@@ -56,8 +59,9 @@ Adapter Eligibility Evaluation bewertet aus einem Assessed Tool Inventory, welch
 - Capability IDs in einen Resolved Execution Plan aufloesen
 - lokale Tool Discovery fuer `php`, `composer`, `docker`, `7z`, `zip`, `unzip`, `tar` und projektbezogen `artisan`
 - Remote Tool Discovery als Human Gate mit statischer Probe-Allowlist und markierter Konsolenausgabe
-- Tool Inventory Assessment ohne Adapter Selection oder Versionskompatibilitaetsentscheidung
+- Tool Inventory Assessment ohne Versionskompatibilitaetsentscheidung
 - Adapter Eligibility Evaluation fuer `archive.zip` und `archive.tar` ohne finale Adapterauswahl
+- Adapter Selection fuer `archive.zip` und `archive.tar` nach zentraler Adapter-Prioritaet
 - Agent-, Human- und Review-Schritte unterscheiden
 - verbindliche Pausepunkte, Abhaengigkeiten und Validierungsanforderungen modellieren
 - Migrationen als High-Risk-Schritte mit Safety Review, `migrate:status` und ausdruecklicher Freigabe modellieren
@@ -151,7 +155,7 @@ Beispielstruktur:
 
 `available` beschreibt, ob ein Executable gefunden wurde. `status` beschreibt das Ergebnis der Discovery beziehungsweise Versionsprobe.
 
-Statuswerte sind `available`, `not-found`, `version-unavailable`, `probe-failed` und `unsupported`. In Phase 2a gibt es noch keine Capability-zu-Tool-Zuordnung und keine Adapter Selection.
+Statuswerte sind `available`, `not-found`, `version-unavailable`, `probe-failed` und `unsupported`. Tool Discovery selbst trifft keine Capability-zu-Tool-Zuordnung und keine Adapterentscheidung.
 
 ## Remote Tool Discovery ausfuehren
 
@@ -193,7 +197,19 @@ Mindestens ein Inventory-Pfad muss angegeben werden. Local und Remote bleiben ge
     -OutputPath (Join-Path $runPath 'decisions\adapter-eligibility.json')
 ```
 
-V1 kennt `archive.zip` und `archive.tar`. `archive.zip` benoetigt lokal `7z` oder `zip` und remote `unzip` oder `7z`. `archive.tar` benoetigt lokal `7z` oder `tar` und remote `tar` oder `7z`. Adapterstatuswerte sind `eligible`, `ineligible` und `unknown`; das Gesamtergebnis ist `ready`, `incomplete` oder `blocked`. Die Kompatibilitaet wird in V1 nur als angenommen ausgewiesen. Eine spaetere Adapter Selection oder ein alternativer manueller Deploymentplan bei blockiertem automatischem Deployment ist Roadmap, nicht Teil dieser Phase.
+V1 kennt `archive.zip` und `archive.tar`. `archive.zip` benoetigt lokal `7z` oder `zip` und remote `unzip` oder `7z`. `archive.tar` benoetigt lokal `7z` oder `tar` und remote `tar` oder `7z`. Adapterstatuswerte sind `eligible`, `ineligible` und `unknown`; das Gesamtergebnis ist `ready`, `incomplete` oder `blocked`. Die Kompatibilitaet wird in V1 nur als angenommen ausgewiesen. Eligibility erzeugt keine finale Auswahl; ein alternativer manueller Deploymentplan bei blockiertem automatischem Deployment ist Roadmap, nicht Teil dieser Phase.
+
+## Adapter auswaehlen
+
+```powershell
+.\tools\deployment-engine\bin\deployment-engine.ps1 select-adapter `
+    -EligibilityPath (Join-Path $runPath 'decisions\adapter-eligibility.json') `
+    -OutputPath (Join-Path $runPath 'decisions\adapter-selection.json')
+```
+
+Die Selection ist eine reine Entscheidungsphase nach der Eligibility Evaluation. Eligibility beantwortet, welche Adapter grundsaetzlich nutzbar sind; Selection beantwortet, welcher eligible Adapter tatsaechlich gewaehlt wird. Auswaehlbar sind nur Kandidaten mit `eligibilityStatus = eligible`. Die Sortierung ist deterministisch nach `priority` aufsteigend und danach `adapterId` aufsteigend. Aktuell wird ZIP bei gleicher Eligibility gegenueber TAR bevorzugt, weil `archive.zip` Prioritaet `100` und `archive.tar` Prioritaet `200` besitzt.
+
+Das Ergebnis enthaelt `selectedAdapterId` ausschliesslich in der Selection-Ausgabe. Bei `selected` ist genau ein Kandidat ausgewaehlt. Bei `incomplete` oder `blocked` bleibt `selectedAdapterId = ""`; es wird kein Adapter ausgewaehlt. Selection erzeugt keine Commands, keine Steps, keine Archive und fuehrt nichts aus. Command Generation, Runtime Directory Management, Clean-Tree Gate und Executor bleiben spaetere Phasen.
 
 Exit-Codes:
 

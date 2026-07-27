@@ -1,6 +1,6 @@
 # Engine Pipeline
 
-Die Pipeline der Version `0.1` ist bewusst in Analyse, Planerzeugung, Capability-Aufloesung, Tool Discovery und spaetere Ausfuehrung getrennt.
+Die Pipeline der Version `0.1` ist bewusst in Analyse, Planerzeugung, Capability-Aufloesung, Tool Discovery, Adapterentscheidung und spaetere Ausfuehrung getrennt.
 
 ## Project Detection
 
@@ -65,11 +65,11 @@ Der Resolver fuehrt keine Aktionen aus. Er trifft keine automatische Adapterwahl
 
 Deployment-Laufzeitdaten und erzeugte Artefakte werden ausserhalb des Deployment-Engine-Repositories und des zu deployenden Projekt-Repositories abgelegt. Jeder Deployment-Lauf erhaelt ein eigenes externes Run-Verzeichnis.
 
-Spaetere Laufdaten koennen beispielsweise Inventare, Assessments, Entscheidungen, Archive, Logs und Reports umfassen. Die Adapter Eligibility Evaluation schreibt weiterhin nur dann eine Datei, wenn explizit `-OutputPath` uebergeben wurde.
+Spaetere Laufdaten koennen beispielsweise Inventare, Assessments, Entscheidungen, Archive, Logs und Reports umfassen. Adapter Eligibility Evaluation und Adapter Selection schreiben weiterhin nur dann eine Datei, wenn explizit `-OutputPath` uebergeben wurde.
 
 Vor einem spaeteren automatischen Deployment wird der Arbeitsbaum des zu deployenden Projekts geprueft. In V1 blockieren sichtbare Aenderungen aus `git status --porcelain` den automatischen Deploy.
 
-Runtime Directory Management und Clean-Tree Gate sind noch nicht implementiert. Beide Architekturbausteine muessen vor Archivierung, Command Generation oder Executor umgesetzt werden. Die aktuelle Adapter Eligibility Evaluation fuehrt keine Git-Statuspruefung aus.
+Runtime Directory Management und Clean-Tree Gate sind noch nicht implementiert. Beide Architekturbausteine muessen vor Archivierung, Command Generation oder Executor umgesetzt werden. Die aktuelle Adapter Eligibility Evaluation und Adapter Selection fuehren keine Git-Statuspruefung aus.
 
 Unbekannte Capability IDs fuehren zu einem harten Fehler. Es gibt keine Fallbacks und keine impliziten Shell Commands.
 
@@ -111,7 +111,7 @@ Tool Discovery erzeugt ein neutrales Tool Inventory.
 Resolved Execution Plan
     -> Tool Discovery
     -> Tool Inventory
-    -> spaetere Adapter Selection
+    -> spaetere Adapterentscheidung
 ```
 
 Die Discovery erkennt nur lokal verfuegbare Werkzeuge und optionale Projektdateien. Sie installiert nichts, startet keine Builds, startet keine Container, fuehrt keine Deployment-Schritte aus und trifft keine Adapterentscheidung.
@@ -177,14 +177,15 @@ Remote-Ausgaben sollen keine Secrets oder personenbezogene Hostdaten enthalten. 
 
 ## Tool Inventory Assessment
 
-Das Tool Inventory Assessment ist eine rein analytische Zwischenschicht vor einer spaeteren Adapter Selection.
+Das Tool Inventory Assessment ist eine rein analytische Zwischenschicht vor Adapter Eligibility Evaluation und Adapter Selection.
 
 ```text
 Local Tool Inventory
     + Remote Tool Inventory
     -> Tool Inventory Assessment
     -> Assessed Tool Inventory
-    -> spaetere Adapter Selection
+    -> Adapter Eligibility Evaluation
+    -> Adapter Selection
 ```
 
 Die Komponente laedt nur explizit angegebene Inventory-JSON-Dateien. Sie startet keine Local Discovery, keine Remote Discovery, keine Installation und keine Ausfuehrung. Mindestens ein Inventory muss vorhanden sein; fehlen beide Quellen, wird die Eingabe kontrolliert abgelehnt.
@@ -197,12 +198,12 @@ Versionen werden nur angezeigt und gegenuebergestellt. Unterschiedliche Versione
 
 ## Adapter Eligibility Evaluation
 
-Die Adapter Eligibility Evaluation ist eine rein analytische Phase nach dem Assessed Tool Inventory und vor einer spaeteren Adapter Selection.
+Die Adapter Eligibility Evaluation ist eine rein analytische Phase nach dem Assessed Tool Inventory und vor der Adapter Selection.
 
 ```text
 Assessed Tool Inventory
     -> Adapter Eligibility Evaluation
-    -> spaetere Adapter Selection
+    -> Adapter Selection
 ```
 
 V1 unterstuetzt genau zwei Adapter: `archive.zip` mit Prioritaet `100` und `archive.tar` mit Prioritaet `200`. Eine niedrigere Zahl bedeutet nur eine spaetere Praeferenz; diese Phase waehlt keinen Adapter aus.
@@ -213,7 +214,26 @@ Adapterstatuswerte sind `eligible`, `ineligible` und `unknown`. Das Gesamtergebn
 
 In V1 findet keine tiefergehende tooluebergreifende Kompatibilitaetspruefung statt. Erfuellte Producer- und Consumer-Voraussetzungen fuehren zu `compatibility.status = assumed` und `checked = false`.
 
-Die Phase erzeugt keine Commands, keine Archive, keine Extraktion, keine Dateiuebertragung und keine Ausfuehrung. Eine spaetere V2-Idee ist ein alternativer beziehungsweise manueller Deploymentplan bei blockiertem automatischem Deployment; dieser Planner ist hier ausdruecklich nicht implementiert.
+Die Phase erzeugt keine Commands, keine Archive, keine Extraktion, keine Dateiuebertragung und keine Ausfuehrung. `selectedAdapterId` gehoert nicht in diese Ausgabe, sondern ausschliesslich in die nachgelagerte Selection-Ausgabe.
+
+## Adapter Selection
+
+Die Adapter Selection ist eine rein analytische Phase nach der Adapter Eligibility Evaluation und vor spaeterer Command Generation oder Execution.
+
+```text
+Adapter Eligibility Evaluation
+    -> Adapter Selection
+    -> spaetere Command Generation
+    -> spaeterer Executor
+```
+
+Eligibility beantwortet, welche Adapter grundsaetzlich nutzbar sind. Selection beantwortet, welcher eligible Adapter tatsaechlich gewaehlt wird und warum. Die Selection liest nur das Eligibility-Ergebnis, validiert es gegen den zentralen Adapter-Katalog und bewertet keine Tool-Inventare, Voraussetzungen oder Kompatibilitaet neu.
+
+Auswaehlbar sind ausschliesslich Adapter mit `eligibilityStatus = eligible`. Eligible Kandidaten werden deterministisch nach `priority` aufsteigend und danach `adapterId` aufsteigend sortiert. Die Prioritaet stammt ausschliesslich aus `src/ps1/DeploymentAdapters.ps1`; es gibt keine zweite Prioritaetsliste. Aktuell wird `archive.zip` bei gleicher Eligibility vor `archive.tar` gewaehlt, weil ZIP Prioritaet `100` und TAR Prioritaet `200` besitzt.
+
+Das Statusmodell der Selection ist `selected`, `incomplete` und `blocked`. Bei `selected` ist genau ein Adapter gewaehlt und `selectedAdapterId` enthaelt dessen ID. Bei `incomplete` gibt es keinen eligible Adapter, aber mindestens einen unknown Kandidaten; bei `blocked` sind alle bekannten Adapter ineligible. In beiden Faellen bleibt `selectedAdapterId = ""`.
+
+Die Ausgabe enthaelt fuer jeden bekannten Adapter genau einen Kandidaten. Kandidaten werden nach derselben deterministischen Regel sortiert und dokumentieren Status, Prioritaet, Selection-Flag und Diagnose. Selection erzeugt keine Commands, keine Steps, keine Archive, keine Dateiuebertragung und fuehrt nichts aus. Eine spaetere V2-Idee ist ein alternativer beziehungsweise manueller Deploymentplan bei blockiertem automatischem Deployment; dieser Planner ist hier ausdruecklich nicht implementiert.
 
 ## Human Gates
 
