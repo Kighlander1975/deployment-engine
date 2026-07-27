@@ -410,7 +410,10 @@ switch ($Command) {
         }
 
         $orchestratorPath = Join-Path -Path $engineRoot -ChildPath 'src/ps1/Invoke-ExecutionOrchestrator.ps1'
-        & $orchestratorPath -Operation Resume -RuntimeDirectoryPath $RuntimeDirectoryPath -SessionEventPath $SessionEventPath -MaxAutomationSteps $MaxAutomationSteps -Format Json -OutputPath $OutputPath
+        $resumeJson = & $orchestratorPath -Operation Resume -RuntimeDirectoryPath $RuntimeDirectoryPath -SessionEventPath $SessionEventPath -MaxAutomationSteps $MaxAutomationSteps -Format Json -OutputPath $OutputPath
+        $resumeJson
+        $resumeResult = $resumeJson | ConvertFrom-Json
+        if ($resumeResult.status -eq 'rejected') { exit 1 }
         exit 0
     }
 }

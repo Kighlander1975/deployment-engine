@@ -243,6 +243,41 @@ function Get-OrchestratorInteger {
     return [int] $Object.$Name
 }
 
+function Assert-OrchestratorArtifactPathAvailable {
+    param(
+        [Parameter(Mandatory = $true)][string] $Path,
+        [Parameter(Mandatory = $true)][object] $Runtime
+    )
+    $resolved = Resolve-OrchestratorPath -Path $Path
+    if (-not (Test-OrchestratorPathWithinDirectory -Path $resolved -Directory ([string] $Runtime.runtimeDirectory))) {
+        throw "Execution resume validation failed: artifact path must be inside runtime directory: $resolved"
+    }
+    if (Test-Path -LiteralPath $resolved -PathType Leaf) {
+        throw "Execution resume validation failed: refusing to overwrite existing artifact: $resolved"
+    }
+}
+
+function Assert-OrchestratorResumeArtifactSlotsAvailable {
+    param(
+        [Parameter(Mandatory = $true)][object] $Runtime,
+        [Parameter(Mandatory = $true)][int] $ExternalEventIndex,
+        [Parameter(Mandatory = $true)][int] $SessionSnapshotIndex,
+        [Parameter(Mandatory = $true)][int] $LoopStartIndex
+    )
+    $paths = @(
+        (Join-Path -Path $Runtime.eventsDirectory -ChildPath ('external-session-event-{0:0000}.json' -f $ExternalEventIndex))
+        (Join-Path -Path $Runtime.decisionsDirectory -ChildPath ('command-session-{0:0000}-external.json' -f $SessionSnapshotIndex))
+        (Join-Path -Path $Runtime.decisionsDirectory -ChildPath ('execution-admission-{0:0000}.json' -f $LoopStartIndex))
+        (Join-Path -Path $Runtime.decisionsDirectory -ChildPath ('executor-request-{0:0000}.json' -f $LoopStartIndex))
+        (Join-Path -Path $Runtime.eventsDirectory -ChildPath ('automation-started-{0:0000}.json' -f $LoopStartIndex))
+        (Join-Path -Path $Runtime.decisionsDirectory -ChildPath ('command-session-{0:0000}-started.json' -f $LoopStartIndex))
+        (Join-Path -Path $Runtime.decisionsDirectory -ChildPath ('executor-result-{0:0000}.json' -f $LoopStartIndex))
+        (Join-Path -Path $Runtime.eventsDirectory -ChildPath ('automation-result-{0:0000}.json' -f $LoopStartIndex))
+        (Join-Path -Path $Runtime.decisionsDirectory -ChildPath ('command-session-{0:0000}-result.json' -f $LoopStartIndex))
+    )
+    foreach ($path in $paths) { Assert-OrchestratorArtifactPathAvailable -Path $path -Runtime $Runtime }
+}
+
 function Assert-OrchestratorResumeEvent {
     param([Parameter(Mandatory = $true)][object] $Event, [Parameter(Mandatory = $true)][object] $Session)
     if (-not (Test-OrchestratorProperty -Object $Event -Name 'eventType')) {
@@ -418,6 +453,7 @@ function Invoke-LocalExecutionResume {
     $appliedExternalEventId = ''
     $executedAutomationCount = 0
     $summary = $null
+    $resumeAccepted = $false
     try {
         $runtime = New-OrchestratorRuntimeFromDirectory -RuntimeDirectoryPath $RuntimeDirectoryPath
         $inputPlan = Read-OrchestratorJsonFile -Path (Join-Path -Path $runtime.inputDirectory -ChildPath 'command-plan.json') -Description 'Input command plan'
@@ -432,20 +468,22 @@ function Invoke-LocalExecutionResume {
         $appliedExternalEventId = [string] $event.eventId
 
         $externalIndex = Get-OrchestratorNextExternalEventIndex -Runtime $runtime
-        Write-OrchestratorJson -Value $event -Path (Join-Path -Path $runtime.eventsDirectory -ChildPath ('external-session-event-{0:0000}.json' -f $externalIndex)) -RuntimeDirectory $runtime.runtimeDirectory | Out-Null
+        $sessionSnapshotIndex = Get-OrchestratorNextArtifactIndex -Runtime $runtime
+        $startIndex = $sessionSnapshotIndex + 1
+        Assert-OrchestratorResumeArtifactSlotsAvailable -Runtime $runtime -ExternalEventIndex $externalIndex -SessionSnapshotIndex $sessionSnapshotIndex -LoopStartIndex $startIndex
 
         $updatedSession = Apply-CommandSessionEvent -CommandSession $session -Event $event
-        $sessionSnapshotIndex = Get-OrchestratorNextArtifactIndex -Runtime $runtime
+        Write-OrchestratorJson -Value $event -Path (Join-Path -Path $runtime.eventsDirectory -ChildPath ('external-session-event-{0:0000}.json' -f $externalIndex)) -RuntimeDirectory $runtime.runtimeDirectory | Out-Null
         Write-OrchestratorJson -Value $updatedSession -Path (Join-Path -Path $runtime.decisionsDirectory -ChildPath ('command-session-{0:0000}-external.json' -f $sessionSnapshotIndex)) -RuntimeDirectory $runtime.runtimeDirectory | Out-Null
 
         $executedAutomationCount = Get-OrchestratorInteger -Object $previousSummary -Name 'executedAutomationCount' -Default 0
-        $startIndex = Get-OrchestratorNextArtifactIndex -Runtime $runtime
+        $resumeAccepted = $true
         $summary = Invoke-OrchestratorExecutionLoop -CommandPlan $effectivePlan -CommandSession $updatedSession -Runtime $runtime -StartIndex $startIndex -MaxAutomationSteps $MaxAutomationSteps -ExecutedAutomationCount $executedAutomationCount -Resumed:$true -AppliedExternalEventId $appliedExternalEventId
     } catch {
         $summary = New-OrchestratorResult -Status 'rejected' -Runtime $runtime -Session $session -ExecutedAutomationCount $executedAutomationCount -Resumed:$true -AppliedExternalEventId $appliedExternalEventId -Diagnostic $_.Exception.Message
     }
 
-    if ($null -ne $runtime) { Set-OrchestratorSummaryJson -Summary $summary -Runtime $runtime -OutputPath $OutputPath }
+    if ($null -ne $runtime -and $resumeAccepted) { Set-OrchestratorSummaryJson -Summary $summary -Runtime $runtime -OutputPath $OutputPath }
     elseif (-not [string]::IsNullOrWhiteSpace($OutputPath)) { Write-OrchestratorJson -Value $summary -Path $OutputPath | Out-Null }
     return $summary | ConvertTo-Json -Depth 100
 }
