@@ -4,6 +4,97 @@ Die SHK-MOMM Deployment Engine ist ein projektuebergreifendes Werkzeug zur nachv
 
 Version `0.1` liefert ausschliesslich Analyse- und Planungsfunktionen. Sie liest ein Projektmanifest, vergleicht zwei Git-Commits, klassifiziert geaenderte Artefakte und kann daraus einen strukturierten Execution Plan mit verbindlichen Human Gates ableiten.
 
+Die Deployment Engine ist ein technisches Backend fuer einen Codex-gefuehrten Deployment-Prozess. Sie ist kein natuerlichsprachlicher Assistent und kein autonom durchlaufendes `deploy-all`-Skript. Die aktuell vorgesehene Nutzung erfolgt ueber Codex als Orchestrator: Codex erkennt den Deployment-Intent, fuehrt den Benutzer durch Project Discovery, Project Resolution, Analyse, Freigaben, manuelle Ausfuehrungsbloecke und Verifikation und verwendet die Engine fuer deterministische technische Ergebnisse.
+
+## Voraussetzungen und Workspace
+
+Vorausgesetzt werden:
+
+- eine Codex-Arbeitsumgebung als Orchestrierungsschicht,
+- PowerShell fuer die vorhandenen CLI-Beispiele,
+- Deployment-Projekte mit gueltigem `deployment.project.json`,
+- bekannte lokale Pfade fuer Workspace, Projekte und Deployment Engine.
+
+Ein empfohlenes portables Layout ist:
+
+```text
+company-root/
+├── AGENTS.md
+├── projects/
+│   ├── project-a/
+│   │   └── deployment.project.json
+│   └── project-b/
+│       └── deployment.project.json
+└── tools/
+    └── deployment-engine/
+```
+
+`company-root` ist der gemeinsame Codex-Arbeitsbereich. `AGENTS.md` definiert den Deployment-Trigger und Orchestrierungsvertrag. `projects/` enthaelt Deployment-Projekte. `tools/deployment-engine/` enthaelt dieses eigenstaendige Tool-Repository. Der Firmen- oder Workspace-Root muss selbst kein Git-Repository sein; einzelne Projekte und das Tool koennen eigene Repositories sein.
+
+Interne SHK-MOMM-Referenz:
+
+```text
+D:\Projekte\shk-momm-firma
+├── AGENTS.md
+├── projects\
+└── tools\deployment-engine\
+```
+
+Fuer eine eigenstaendige Nutzung sollte eine Workspace-`AGENTS.md` mindestens festlegen, dass Codex der zustandsfuehrende Orchestrator ist, die Engine keine natuerliche Sprache interpretiert, Project Discovery und Project Resolution vor jeder Analyse stehen, keine automatische Projektauswahl erlaubt ist, kritische Aktionen Stop-and-Wait erfordern und PowerShell-/SSH-Bloecke erst nach realer Ausgabe bewertet werden.
+
+## Codex-Gefuehrter Einstieg
+
+Allgemeiner Trigger:
+
+```text
+Benutzer:
+Deploye ein Projekt.
+
+Codex:
+- erkennt den Deployment-Intent,
+- fuehrt Project Discovery aus,
+- zeigt nur eligible Projekte als auswählbare Optionen,
+- wartet auf die ausdrueckliche Auswahl.
+
+Benutzer:
+shk-momm-kundendaten
+
+Codex:
+- loest die ID exakt ueber Project Resolution auf,
+- zeigt ID, Name, Manifestpfad und Projektpfad,
+- verlangt die Projektbestaetigung,
+- startet erst danach separat die Analyse.
+```
+
+Spezifischer Trigger:
+
+```text
+Benutzer:
+Deploye shk-momm-kundendaten.
+
+Codex:
+- loest `shk-momm-kundendaten` ueber `resolve-project` auf,
+- verwendet nur exakte `project.id`- oder `project.aliases`-Treffer,
+- fordert vor jeder Analyse die ausdrueckliche Bestaetigung des aufgeloesten Projekts.
+```
+
+Aus dem Referenzlayout heraus:
+
+```powershell
+.\tools\deployment-engine\bin\deployment-engine.ps1 discover-projects `
+    -ProjectsRoot '.\projects' `
+    -Format Json
+```
+
+```powershell
+.\tools\deployment-engine\bin\deployment-engine.ps1 resolve-project `
+    -ProjectsRoot '.\projects' `
+    -ProjectIdentifier 'shk-momm-kundendaten' `
+    -Format Json
+```
+
+Weitere Details zu Rollenmodell, Aktionsklassen, Stop-and-Wait, Workflowzustaenden, Freigabegrenzen und Abweichungsverhalten stehen in [docs/04-codex-orchestration.md](docs/04-codex-orchestration.md). Vorlagen fuer reale Testlaeufe liegen unter [docs/test-runs/](docs/test-runs/).
+
 ## Analyse und Ausfuehrung
 
 Die aktuelle Version fuehrt keine Deployments aus. Sie kopiert keine Dateien, erzeugt keine Pakete, fuehrt keine Migrationen aus, verbindet sich nicht per SSH und aktualisiert keine Deployment-Marker. Die spaetere Execution-Phase wird bewusst von Analyse und Planerzeugung getrennt.
