@@ -99,6 +99,31 @@
         "environmentTrigger": { "type": "array", "items": { "type": "string" } },
         "cleanupTrigger": { "type": "array", "items": { "type": "string" } }
       }
+    },
+    "environmentManagement": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "contractFile": { "type": "string", "minLength": 1 },
+        "unknownKeyPolicy": { "type": "string", "enum": ["review"] },
+        "keys": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["strategy", "secret", "overwrite", "required"],
+            "properties": {
+              "strategy": { "type": "string", "enum": ["review", "prompt-if-missing", "generate-remote-if-missing", "keep-existing"] },
+              "secret": { "type": "boolean" },
+              "overwrite": { "type": "boolean" },
+              "required": { "type": "boolean" },
+              "description": { "type": "string" },
+              "suggestedValue": { "type": "string" },
+              "validationPattern": { "type": "string" }
+            }
+          }
+        }
+      }
     }
   }
 }

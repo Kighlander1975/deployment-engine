@@ -54,6 +54,7 @@ function New-TestAnalysis {
         [bool] $ComposerInstallRequired = $false,
         [bool] $MigrationsRequired = $true,
         [bool] $EnvironmentReviewRequired = $true,
+        [bool] $SeederReviewRequired = $true,
         [bool] $CleanupRequired = $true,
         [bool] $ProtectedFileReviewRequired = $false,
         [bool] $DocumentationOnly = $false,
@@ -80,7 +81,52 @@ function New-TestAnalysis {
   "environmentChanges": {
     "path": "laravel_app/.env.example",
     "addedKeys": ["NEW_KEY"],
-    "removedKeys": []
+    "removedKeys": [],
+    "keyAssessments": [
+      {
+        "key": "NEW_KEY",
+        "changeType": "added",
+        "contractStatus": "missing-rule",
+        "strategy": null,
+        "secret": null,
+        "overwrite": null,
+        "required": null,
+        "recommendedAction": "add-manifest-rule",
+        "executionAllowed": false,
+        "reviewRequired": true
+      }
+    ],
+    "unknownKeys": ["NEW_KEY"],
+    "contractIssues": []
+  },
+  "seederReview": {
+    "changed": true,
+    "files": [
+      {
+        "path": "laravel_app/database/seeders/RoleSeeder.php",
+        "status": "M",
+        "changeType": "modified",
+        "probablePurpose": "reference-data",
+        "affectedModels": ["Role"],
+        "affectedTables": [],
+        "destructiveOperations": [],
+        "writeOperations": ["updateOrCreate"],
+        "probableIdempotency": "likely",
+        "riskLevel": "medium",
+        "confidence": "medium",
+        "reviewRequired": true,
+        "recommendations": ["Do not execute automatically.", "Review changed seeders before deployment."],
+        "evidence": ["References App\\Models\\Role", "Uses updateOrCreate"]
+      }
+    ],
+    "summary": {
+      "total": 1,
+      "added": 0,
+      "modified": 1,
+      "deleted": 0,
+      "highRisk": 0,
+      "reviewRequired": true
+    }
   },
   "decisions": {
     "runtimeDeploymentRequired": true,
@@ -90,6 +136,8 @@ function New-TestAnalysis {
     "environmentReviewRequired": true,
     "cleanupRequired": true,
     "protectedFileReviewRequired": false,
+    "environmentContractIncomplete": true,
+    "seederReviewRequired": true,
     "documentationOnly": false
   },
   "warnings": ["Git working tree is not clean."],
@@ -105,6 +153,9 @@ function New-TestAnalysis {
     $analysis.decisions.environmentReviewRequired = $EnvironmentReviewRequired
     $analysis.decisions.cleanupRequired = $CleanupRequired
     $analysis.decisions.protectedFileReviewRequired = $ProtectedFileReviewRequired
+    $analysis.seederReview.changed = $SeederReviewRequired
+    $analysis.seederReview.summary.reviewRequired = $SeederReviewRequired
+    if ($analysis.decisions.PSObject.Properties.Name -contains 'seederReviewRequired') { $analysis.decisions.seederReviewRequired = $SeederReviewRequired }
     $analysis.decisions.documentationOnly = $DocumentationOnly
     $analysis.blockers = @($Blockers)
 
@@ -138,7 +189,7 @@ Assert-Equal $unresolvedBeforeResolve $unresolvedAfterResolve 'Resolver must not
 Assert-True (-not (Test-PropertyValue -Object $unresolvedPlan -Name 'resolved')) 'Unresolved input plan must not receive resolved flag.'
 Assert-True $resolvedFromUnresolved.resolved 'Resolved plan must receive resolved flag.'
 Assert-Equal $plan.blocked $false 'Empty blocker list must not block the plan.'
-Assert-Equal ($plan.phases -join ',') 'preconditions,environment-review,local-frontend-build,local-deployment-preparation,runtime-file-transfer,runtime-cleanup,remote-dependency-installation,remote-migrations,remote-runtime-maintenance,deployment-verification,deployment-marker-update' 'Phase order must be stable.'
+Assert-Equal ($plan.phases -join ',') 'preconditions,environment-review,local-frontend-build,local-deployment-preparation,runtime-file-transfer,runtime-cleanup,remote-dependency-installation,database-review,remote-migrations,remote-runtime-maintenance,deployment-verification,deployment-marker-update' 'Phase order must be stable.'
 Assert-Equal $planJsonA $planJsonB 'Execution plan output must be deterministic.'
 Assert-Equal $plan.steps[-1].id 'deployment-marker.update' 'Deployment marker update must be the final step.'
 $stepIds = @($plan.steps | ForEach-Object { $_.id })
@@ -151,6 +202,7 @@ $existingStepIds = @(
     'runtime.transfer.review',
     'runtime.cleanup.review',
     'remote.dependencies.composer-install',
+    'database.seeders.review',
     'remote.migrations.execute',
     'remote.runtime.cache-clear',
     'deployment.verification.remote-about',
@@ -164,6 +216,19 @@ Assert-Equal (Get-Step -Plan $plan -Id 'remote.dependencies.composer-install').r
 Assert-Equal (Get-Step -Plan $plan -Id 'local.frontend-build.prepare').required $true 'Frontend build step must be required.'
 Assert-Equal (Get-Step -Plan $plan -Id 'environment.review').executionMode 'review' 'Environment changes must create a review gate.'
 Assert-Equal (Get-Step -Plan $plan -Id 'environment.review').status 'waiting-for-review' 'Environment review gate must pause.'
+$environmentStep = Get-Step -Plan $plan -Id 'environment.review'
+Assert-True (@($environmentStep.instructions.displayedInformation.keyAssessments).Count -gt 0) 'Environment review must include key assessments.'
+Assert-True (@($environmentStep.instructions.displayedInformation.unknownKeys) -contains 'NEW_KEY') 'Environment review must include unknown keys.'
+Assert-True $environmentStep.continuation.blocksAutomaticContinuation 'Unknown environment keys must block automatic continuation.'
+
+$seederStep = Get-Step -Plan $plan -Id 'database.seeders.review'
+Assert-Equal $seederStep.executionMode 'review' 'Seeder changes must create a review step.'
+Assert-Equal $seederStep.status 'blocked' 'Seeder review must wait behind earlier review gates.'
+Assert-True $seederStep.approvalRequired 'Seeder review must require approval.'
+Assert-True ($seederStep.instructions.automaticExecutionAllowed -eq $false) 'Seeder review must not allow automatic execution.'
+Assert-True (@($seederStep.instructions.changedSeeders).Count -eq 1) 'Seeder review must list changed seeders.'
+Assert-True (-not (Test-PropertyValue -Object $seederStep.instructions -Name 'command')) 'Seeder review must not contain a command.'
+Assert-True ([string]::IsNullOrWhiteSpace([string] $seederStep.capabilityId)) 'Seeder review must not contain a capability.'
 
 $migrationStep = Get-Step -Plan $plan -Id 'remote.migrations.execute'
 $unresolvedMigrationStep = Get-Step -Plan $unresolvedPlan -Id 'remote.migrations.execute'
@@ -181,7 +246,7 @@ Assert-True $migrationStep.approvalRequired 'Migration execution must require ap
 Assert-True $migrationStep.validation.requiresOutput 'Migration validation must require output.'
 Assert-True $migrationStep.validation.ambiguousWithoutSuccessMatch 'Missing positive migration evidence must be ambiguous.'
 
-$migrationOnlyPlan = New-ExecutionPlan -Analysis (New-TestAnalysis -RuntimeDeploymentRequired $false -FrontendBuildRequired $false -MigrationsRequired $true -EnvironmentReviewRequired $false -CleanupRequired $false) -Manifest $manifest
+$migrationOnlyPlan = New-ExecutionPlan -Analysis (New-TestAnalysis -RuntimeDeploymentRequired $false -FrontendBuildRequired $false -MigrationsRequired $true -EnvironmentReviewRequired $false -SeederReviewRequired $false -CleanupRequired $false) -Manifest $manifest
 $migrationSafetyStep = Get-Step -Plan $migrationOnlyPlan -Id 'remote.migrations.safety-review'
 $migrationStatusStep = Get-Step -Plan $migrationOnlyPlan -Id 'remote.migrations.status'
 $waitingMigrationStep = Get-Step -Plan $migrationOnlyPlan -Id 'remote.migrations.execute'

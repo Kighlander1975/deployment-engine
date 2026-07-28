@@ -1,6 +1,6 @@
 # Rule Engine
 
-Version `0.1` bewertet Regeln deterministisch aus Git-Diff, Klassifikationen und Environment-Vergleich.
+Version `0.1` bewertet Regeln deterministisch aus Git-Diff, Klassifikationen, Environment-Vergleich und statischer Seeder-Analyse.
 
 ## Composer
 
@@ -16,7 +16,11 @@ Neue oder geaenderte Migrationen aktivieren die Migrationsphase. Jede Migrations
 
 ## Environment
 
-Wenn `.env.example` geaendert wurde, analysiert die Engine neue und entfernte Schluessel. Zielsystem-Dateien wie `.env` werden nicht geaendert.
+Wenn `.env.example` oder eine im Manifest konfigurierte Vertragsdatei geaendert wurde, analysiert die Engine neue, entfernte und unbekannte Schluessel. Optionale `environmentManagement`-Regeln liefern Strategie, Secret-Kennzeichnung, Ueberschreibschutz und Pflichtstatus. Zielsystem-Dateien wie `.env` werden nicht gelesen und nicht geaendert.
+
+## Seeder
+
+Wenn Seeder-Dateien geaendert wurden, erzeugt die Engine eine statische Review-Bewertung. Sie sucht nur im versionierten Dateitext nach einfachen Hinweisen auf Models, Tabellen, Schreiboperationen und destruktive Operationen. Seeder werden nicht ausgefuehrt und es wird kein `db:seed`-Befehl geplant.
 
 ## Cleanup
 

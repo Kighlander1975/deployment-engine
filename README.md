@@ -70,7 +70,8 @@ Local Operation Executor V1 verarbeitet ausschliesslich solche Executor Requests
 - Git-Baseline und Zielcommit aufloesen
 - Git-Diff mit Umbenennungen auswerten
 - Artefakte anhand projektspezifischer Regeln klassifizieren
-- `.env.example`-Schluessel vergleichen
+- `.env.example`-Schluessel vergleichen und optional gegen `environmentManagement` bewerten
+- geaenderte Laravel-Seeders statisch fuer Review-Zwecke einschaetzen
 - Deployment-Entscheidungen und manuelle Freigabepunkte ableiten
 - Konsolenzusammenfassung und optionales Analyzer-JSON erzeugen
 - Analyzer-JSON in einen Execution Plan mit Capability IDs uebersetzen
@@ -89,6 +90,20 @@ Local Operation Executor V1 verarbeitet ausschliesslich solche Executor Requests
 - Agent-, Human- und Review-Schritte unterscheiden
 - verbindliche Pausepunkte, Abhaengigkeiten und Validierungsanforderungen modellieren
 - Migrationen als High-Risk-Schritte mit Safety Review, `migrate:status` und ausdruecklicher Freigabe modellieren
+
+## Environment-Vertrag
+
+Das Projektmanifest kann optional `environmentManagement` enthalten. Dieser Abschnitt beschreibt erwartete Environment-Schluessel, ihre Strategie, ob sie geheim sind, ob bestehende Zielwerte ueberschrieben werden duerfen und ob ein Wert zwingend benoetigt wird.
+
+Der Analyzer liest dafuer ausschliesslich versionierte Vertragsdateien wie `laravel_app/.env.example`. Zielsystemdateien wie `.env` werden nicht gelesen, nicht geschrieben und nicht aus Beispielwerten rekonstruiert. Secret-Schluessel duerfen keine konkreten Werte oder `suggestedValue` im Manifest enthalten.
+
+Unbekannte, hinzugefuegte oder entfernte Schluessel sowie unvollstaendige Regeln erzeugen Review-Bedarf. Die spaetere Umsetzung bleibt ein Human-Gate; es wird keine Environment-Datei automatisch erzeugt oder veraendert.
+
+## Seeder-Review
+
+Geaenderte Dateien unter der Seeder-Klassifikation werden statisch analysiert. Die Engine erkennt einfache Hinweise wie betroffene Models, Tabellen, Schreiboperationen und potenziell destruktive Operationen und erzeugt daraus eine Review-Zusammenfassung.
+
+Seeder werden dadurch nicht ausgefuehrt. Es gibt keine `db:seed`-Planung, keine Datenbankverbindung und keine Idempotenzgarantie. Das Ergebnis dient ausschliesslich als fachlicher Review-Hinweis vor einem Deployment.
 - verbotene Artisan-Kommandos wie `migrate:fresh`, `migrate:refresh`, `migrate:reset`, `migrate:rollback` und `db:wipe` ablehnen
 - Deployment-Marker-Update nur als letzten bedingten Planschritt modellieren
 

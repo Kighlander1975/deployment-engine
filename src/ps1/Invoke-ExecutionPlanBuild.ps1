@@ -402,6 +402,7 @@ function New-ExecutionPlanContext {
     )
 
     $environmentChanges = if (Test-PropertyValue -Object $Analysis -Name 'environmentChanges') { $Analysis.environmentChanges } else { [pscustomobject]@{} }
+    $seederReview = if (Test-PropertyValue -Object $Analysis -Name 'seederReview') { $Analysis.seederReview } else { [pscustomobject]@{ changed = $false; files = @(); summary = [pscustomobject]@{ total = 0; added = 0; modified = 0; deleted = 0; highRisk = 0; reviewRequired = $false } } }
 
     return [pscustomobject]@{
         analysis = $Analysis
@@ -414,6 +415,11 @@ function New-ExecutionPlanContext {
         environmentChangePath = if (Test-PropertyValue -Object $environmentChanges -Name 'path') { $environmentChanges.path } else { 'laravel_app/.env.example' }
         environmentAddedKeys = if (Test-PropertyValue -Object $environmentChanges -Name 'addedKeys') { @($environmentChanges.addedKeys) } else { @() }
         environmentRemovedKeys = if (Test-PropertyValue -Object $environmentChanges -Name 'removedKeys') { @($environmentChanges.removedKeys) } else { @() }
+        environmentKeyAssessments = if (Test-PropertyValue -Object $environmentChanges -Name 'keyAssessments') { @($environmentChanges.keyAssessments) } else { @() }
+        environmentUnknownKeys = if (Test-PropertyValue -Object $environmentChanges -Name 'unknownKeys') { @($environmentChanges.unknownKeys) } else { @() }
+        environmentContractIssues = if (Test-PropertyValue -Object $environmentChanges -Name 'contractIssues') { @($environmentChanges.contractIssues) } else { @() }
+        seederReview = $seederReview
+        seederReviewRequired = if (Test-PropertyValue -Object $Analysis.decisions -Name 'seederReviewRequired') { [bool] $Analysis.decisions.seederReviewRequired } else { [bool] $seederReview.changed }
         baselineCommit = if (Test-PropertyValue -Object $Analysis -Name 'baselineCommit') { [string] $Analysis.baselineCommit } else { '' }
         targetCommit = if (Test-PropertyValue -Object $Analysis -Name 'targetCommit') { [string] $Analysis.targetCommit } else { '' }
         applicationRemoteDirectory = Get-ApplicationRemoteDirectory -Manifest $Manifest
@@ -480,6 +486,9 @@ function BuildEnvironmentReview {
                     path = $Context.environmentChangePath
                     addedKeys = @($Context.environmentAddedKeys)
                     removedKeys = @($Context.environmentRemovedKeys)
+                    keyAssessments = @($Context.environmentKeyAssessments)
+                    unknownKeys = @($Context.environmentUnknownKeys)
+                    contractIssues = @($Context.environmentContractIssues)
                 }
                 requiredResponse = 'Ausdrueckliche fachliche Freigabe inklusive Bewertung der angezeigten Environment-Aenderungen.'
             }) `
@@ -508,6 +517,36 @@ function BuildEnvironmentReview {
             -Continuation (New-ContinuationRule -blocksAutomaticContinuation $true -requiredUserAction 'Der Prozess wartet auf Review der geschuetzten Dateien.'))
     } else {
         Add-ExecutionPlanStep -Context $Context -Step (New-ExecutionPlanStep -Id 'environment.protected-files-review' -Phase 'environment-review' -Title 'Geschuetzte Serverdateien pruefen' -ExecutionMode 'review' -Required $false -Status 'skipped' -Reason 'Der Analyzer hat keine betroffenen geschuetzten Dateien erkannt.')
+    }
+}
+
+function BuildSeederReviewPlan {
+    param([Parameter(Mandatory = $true)][object] $Context)
+
+    if ($Context.seederReviewRequired) {
+        $status = Get-BlockedOrWaitingStatus -BlockingDependencies $Context.gateIds.ToArray() -WaitingStatus 'waiting-for-review'
+        Add-ExecutionPlanStep -Context $Context -BlocksFollowingSteps $true -Step (New-ExecutionPlanStep `
+            -Id 'database.seeders.review' `
+            -Phase 'database-review' `
+            -Title 'Geaenderte Seeder statisch pruefen' `
+            -ExecutionMode 'review' `
+            -Status $status `
+            -Reason 'Seeder wurden geaendert und duerfen nicht automatisch ausgefuehrt werden.' `
+            -ApprovalRequired $true `
+            -RiskLevel $(if ($Context.seederReview.summary.highRisk -gt 0) { 'high' } else { 'normal' }) `
+            -DependsOn @($Context.gateIds) `
+            -Instructions ([pscustomobject]@{
+                reviewSubject = 'Statische Seeder-Bewertung ohne Datenbankzugriff pruefen.'
+                automaticExecutionAllowed = $false
+                changedSeeders = @($Context.seederReview.files)
+                summary = $Context.seederReview.summary
+                forbiddenCommands = @('php artisan db:seed', 'php artisan db:seed --force', 'php artisan migrate --seed')
+                requiredResponse = 'Fachliche Bewertung der geaenderten Seeder. Keine automatische Ausfuehrung.'
+            }) `
+            -Validation (New-ValidationRule -RequiredResponse 'Explizite Seeder-Review-Freigabe; keine Ausfuehrung.') `
+            -Continuation (New-ContinuationRule -blocksAutomaticContinuation $true -requiredUserAction 'Der Prozess wartet auf fachliche Seeder-Bewertung.'))
+    } else {
+        Add-ExecutionPlanStep -Context $Context -Step (New-ExecutionPlanStep -Id 'database.seeders.review' -Phase 'database-review' -Title 'Geaenderte Seeder statisch pruefen' -ExecutionMode 'review' -Required $false -Status 'skipped' -Reason 'Der Analyzer hat keine geaenderten Seeder erkannt.')
     }
 }
 
@@ -801,6 +840,7 @@ function ConvertTo-ExecutionPlanResult {
         'runtime-file-transfer',
         'runtime-cleanup',
         'remote-dependency-installation',
+        'database-review',
         'remote-migrations',
         'remote-runtime-maintenance',
         'deployment-verification',
@@ -828,6 +868,7 @@ function New-UnresolvedExecutionPlan {
     BuildTransferPlan -Context $context
     BuildCleanupPlan -Context $context
     BuildComposerPlan -Context $context
+    BuildSeederReviewPlan -Context $context
     BuildMigrationPlan -Context $context
     BuildMaintenancePlan -Context $context
     BuildVerificationPlan -Context $context

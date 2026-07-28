@@ -62,7 +62,7 @@ Typische Pfade: `laravel_app/database/seeders/**`.
 
 Bedeutung: Dateninitialisierung oder Referenzdatenpflege.
 
-Konsequenz: Keine stille Ausfuehrung; moeglicher manueller Freigabepunkt.
+Konsequenz: Keine stille Ausfuehrung; statischer Review mit Hinweisen auf Models, Tabellen, Schreiboperationen und potenziell destruktive Operationen; moeglicher manueller Freigabepunkt.
 
 ## environment-contract
 
@@ -70,7 +70,7 @@ Typische Pfade: `laravel_app/.env.example`.
 
 Bedeutung: Vertrag ueber erwartete Umgebungsvariablen.
 
-Konsequenz: Neue und entfernte Schluessel analysieren; `.env` nicht automatisch aendern.
+Konsequenz: Neue, entfernte und unbekannte Schluessel analysieren; optionale `environmentManagement`-Regeln aus dem Manifest beruecksichtigen; `.env` nicht lesen und nicht automatisch aendern.
 
 ## protected-server-file
 

@@ -36,6 +36,27 @@
       ".deploy-version"
     ]
   },
+  "environmentManagement": {
+    "contractFile": "laravel_app/.env.example",
+    "unknownKeyPolicy": "review",
+    "keys": {
+      "RESOURCE_LOCK_HMAC_KEY": {
+        "strategy": "generate-remote-if-missing",
+        "secret": true,
+        "overwrite": false,
+        "required": true,
+        "description": "HMAC-Schluessel fuer Resource Locks; Wert wird nicht im Manifest gespeichert."
+      },
+      "SESSION_ACTIVITY_IDLE_DISPLAY_AFTER_SECONDS": {
+        "strategy": "prompt-if-missing",
+        "secret": false,
+        "overwrite": false,
+        "required": true,
+        "suggestedValue": "300",
+        "validationPattern": "^[0-9]+$"
+      }
+    }
+  },
   "classification": {
     "documentation": [
       "*.md",

@@ -16,11 +16,11 @@ Der Git-Diff wird mit `--name-status --find-renames` ausgewertet. Jede betroffen
 
 ## Rule Evaluation
 
-Die Regelbewertung leitet Entscheidungen aus den Klassifikationen und besonderen Dateiarten ab. Dazu gehoeren Composer-Schritte, Frontend-Build, Migrationsbedarf, Environment-Review, Cleanup und geschuetzte Dateien.
+Die Regelbewertung leitet Entscheidungen aus den Klassifikationen und besonderen Dateiarten ab. Dazu gehoeren Composer-Schritte, Frontend-Build, Migrationsbedarf, Environment-Review, Seeder-Review, Cleanup und geschuetzte Dateien.
 
 ## Analyzer-Ergebnis
 
-Das Analyzer-Ergebnis fasst Eingangsdaten, Git-Zustand, geaenderte Dateien, Klassifikationen, Environment-Aenderungen, Entscheidungen, Warnungen, Blocker und manuelle Freigabepunkte zusammen.
+Das Analyzer-Ergebnis fasst Eingangsdaten, Git-Zustand, geaenderte Dateien, Klassifikationen, Environment-Aenderungen, Seeder-Review, Entscheidungen, Warnungen, Blocker und manuelle Freigabepunkte zusammen.
 
 Der Analyzer fuehrt keine Deployment-Aktion aus und trifft keine Aussage darueber, ob ein Schritt bereits erledigt ist.
 
@@ -420,6 +420,18 @@ Schritte mit Ausfuehrungsmodus `human` beschreiben Befehle, die der Benutzer sel
 Ein Human Gate muss Zielumgebung, Kanal, Arbeitsverzeichnis, vollstaendigen Befehl, Zweck, erwartetes Ergebnis, Fehlermuster und benoetigte Rueckmeldung enthalten. Der Prozess bleibt pausiert, bis die geforderte Konsolenausgabe vorliegt und eindeutig erfolgreich bewertet wurde.
 
 Eine reine Bestaetigung wie `erledigt` oder `lief durch` reicht nicht aus, wenn Konsolenausgabe verlangt wird. Fehlt ein positives Erfolgsmuster, wird die Ausgabe als mehrdeutig behandelt, sofern die Validierungsregel dies verlangt.
+
+## Environment-Vertrag
+
+`environmentManagement` im Projektmanifest ist optional und erweitert den Vergleich versionierter Environment-Vertraege. Der Analyzer bewertet neue, entfernte und unbekannte Schluessel gegen die deklarierten Regeln und gibt pro Schluessel eine empfohlene Review-Aktion aus.
+
+Die Engine liest dafuer keine Zielsystemdatei wie `.env`, schreibt keine Environment-Datei und gibt keine Secret-Werte aus. Secret-Regeln duerfen keine konkreten Werte und keine `suggestedValue` enthalten. Unvollstaendige Regeln, unbekannte Schluessel und entfernte Schluessel bleiben Review-Gates.
+
+## Seeder Review
+
+Seeder-Aenderungen werden statisch bewertet. Die Analyse betrachtet nur den versionierten Dateitext und sucht nach einfachen Hinweisen wie betroffenen Models, Tabellen, Schreiboperationen und destruktiven Operationen.
+
+Der Execution Plan Builder erzeugt daraus bei Bedarf ein Review-Gate `database.seeders.review` vor Migrationen. Die Engine fuehrt keine Seeder aus, erzeugt keinen `db:seed`-Befehl und trifft keine produktive Datenentscheidung.
 
 ## Migration Safety
 
