@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0, Mandatory = $true)]
-    [ValidateSet('plan', 'discover-tools', 'remote-discovery-plan', 'resolve-remote-discovery', 'assess-tool-inventories', 'evaluate-adapter-eligibility', 'select-adapter', 'build-deployment-strategy', 'generate-commands', 'create-command-session', 'update-command-session', 'evaluate-execution-admission', 'build-executor-request', 'execute-local-operation', 'build-automation-started-event', 'build-automation-result-event', 'create-runtime-directory', 'assess-clean-tree', 'orchestrate-local-execution', 'resume-local-execution')]
+    [ValidateSet('plan', 'discover-projects', 'resolve-project', 'discover-tools', 'remote-discovery-plan', 'resolve-remote-discovery', 'assess-tool-inventories', 'evaluate-adapter-eligibility', 'select-adapter', 'build-deployment-strategy', 'generate-commands', 'create-command-session', 'update-command-session', 'evaluate-execution-admission', 'build-executor-request', 'execute-local-operation', 'build-automation-started-event', 'build-automation-result-event', 'create-runtime-directory', 'assess-clean-tree', 'orchestrate-local-execution', 'resume-local-execution')]
     [string] $Command,
 
     [string] $Analysis,
@@ -9,6 +9,10 @@ param(
     [string] $Manifest,
 
     [string] $ProjectPath,
+
+    [string] $ProjectsRoot,
+
+    [string] $ProjectIdentifier,
 
     [string] $RuntimeRootPath,
 
@@ -65,6 +69,37 @@ $ErrorActionPreference = 'Stop'
 $engineRoot = [System.IO.Path]::GetFullPath((Join-Path -Path $PSScriptRoot -ChildPath '..'))
 
 switch ($Command) {
+    'discover-projects' {
+        if ([string]::IsNullOrWhiteSpace($Format)) {
+            $Format = 'Json'
+        }
+        if ($Format -ne 'Json') {
+            throw "discover-projects only supports -Format Json."
+        }
+        if ([string]::IsNullOrWhiteSpace($ProjectsRoot)) {
+            throw "Missing required parameter for 'discover-projects': -ProjectsRoot"
+        }
+
+        $catalogPath = Join-Path -Path $engineRoot -ChildPath 'src/ps1/ProjectCatalog/ProjectCatalog.ps1'
+        & $catalogPath -Operation Discover -ProjectsRoot $ProjectsRoot -Format Json -OutputPath $OutputPath
+    }
+    'resolve-project' {
+        if ([string]::IsNullOrWhiteSpace($Format)) {
+            $Format = 'Json'
+        }
+        if ($Format -ne 'Json') {
+            throw "resolve-project only supports -Format Json."
+        }
+        if ([string]::IsNullOrWhiteSpace($ProjectsRoot)) {
+            throw "Missing required parameter for 'resolve-project': -ProjectsRoot"
+        }
+        if ([string]::IsNullOrWhiteSpace($ProjectIdentifier)) {
+            throw "Missing required parameter for 'resolve-project': -ProjectIdentifier"
+        }
+
+        $catalogPath = Join-Path -Path $engineRoot -ChildPath 'src/ps1/ProjectCatalog/ProjectCatalog.ps1'
+        & $catalogPath -Operation Resolve -ProjectsRoot $ProjectsRoot -ProjectIdentifier $ProjectIdentifier -Format Json -OutputPath $OutputPath
+    }
     'plan' {
         if ([string]::IsNullOrWhiteSpace($Format)) {
             $planFormat = 'Text'

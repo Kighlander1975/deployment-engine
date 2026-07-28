@@ -11,6 +11,10 @@ Die aktuelle Version fuehrt keine Deployments aus. Sie kopiert keine Dateien, er
 Die fachliche Trennung lautet:
 
 ```text
+Project Catalog
+    -> Project Discovery
+    -> Project Resolution
+    -> explizit bestaetigtes Projekt
 Analyzer
     -> Execution Plan Builder
     -> Capability Resolver
@@ -33,6 +37,8 @@ Analyzer
 ```
 
 Der Analyzer ermittelt Aenderungen und Deployment-Entscheidungen. Der Execution Plan Builder uebersetzt dieses Ergebnis in stabile, maschinenlesbare Schritte mit `capabilityId`. Der Capability Resolver ist eine pure Transformation: Er veraendert den uebergebenen unresolved Plan nicht, sondern erzeugt ein neues Resolved Execution Plan-Objekt mit konkreten Anzeigeinformationen wie `displayCommand`, Ausfuehrungsmodus, Risikostufe, Freigabepflicht, Validierungsregeln und Fortsetzungsregeln. Ein spaeterer Executor darf den resolved Plan nur schrittweise verarbeiten und muss an Human- und Review-Gates verbindlich pausieren.
+
+Project Catalog liegt vor jeder Analyse. Die Domäne inventarisiert Deployment-Projekte unter einem expliziten Projects Root und loest nur exakte `project.id`-Werte oder gepflegte `project.aliases` auf. `project.name` ist ausschliesslich Anzeigename und wird nicht zur Resolution verwendet. Die Engine interpretiert keine natuerliche Sprache, kennt keine Gespraechshistorie, verwendet kein aktuelles Arbeitsverzeichnis als Default und waehlt niemals automatisch ein Projekt.
 
 Remote-Befehle werden nur angezeigt. Der Agent besitzt keinen SSH-Zugriff und soll keinen SSH-Zugriff erhalten. Befehle auf dem Zielsystem werden ausschliesslich vom Benutzer ausgefuehrt. Wenn ein Schritt Konsolenausgabe verlangt, reicht eine reine Bestaetigung wie `erledigt` oder `lief durch` nicht aus.
 
@@ -67,6 +73,8 @@ Local Operation Executor V1 verarbeitet ausschliesslich solche Executor Requests
 ## Unterstuetzter Umfang in Version 0.1
 
 - Projektmanifest lesen und validieren
+- Project Catalog fuer `discover-projects` und `resolve-project`
+- optionale Manifestfelder `project.aliases` und `project.deployable`
 - Git-Baseline und Zielcommit aufloesen
 - Git-Diff mit Umbenennungen auswerten
 - Artefakte anhand projektspezifischer Regeln klassifizieren
@@ -90,6 +98,41 @@ Local Operation Executor V1 verarbeitet ausschliesslich solche Executor Requests
 - Agent-, Human- und Review-Schritte unterscheiden
 - verbindliche Pausepunkte, Abhaengigkeiten und Validierungsanforderungen modellieren
 - Migrationen als High-Risk-Schritte mit Safety Review, `migrate:status` und ausdruecklicher Freigabe modellieren
+
+## Project Catalog
+
+Der Project Catalog ist eine eigenstaendige read-only Domaene vor Analyzer und Planner. Er sucht unter einem expliziten `-ProjectsRoot` kontrolliert nach `deployment.project.json`, validiert Manifeste gegen das Projektmanifest-Schema, bewertet `eligibility` und erkennt Identifier-Konflikte.
+
+Eligibility-Werte sind:
+
+- `eligible`: Projekt ist technisch als deploybar auswählbar.
+- `ineligible`: `project.deployable` ist explizit `false`.
+- `invalid-manifest`: Manifest ist kein gueltiges JSON oder nicht schema-konform.
+- `duplicate-id`: `project.id` ist global nicht eindeutig, auch bei abweichender Gross-/Kleinschreibung.
+- `identifier-conflict`: Alias-Konflikt mit fremder ID, fremdem Alias oder case-insensitiv doppeltem Alias.
+
+Discovery listet auch nicht auswählbare Projekte, damit Ursachen sichtbar bleiben. Codex darf Benutzern nur `eligible`-Projekte als auswählbare Deployment-Option anbieten. Resolution verwendet ausschliesslich exakte IDs und Aliase, case-insensitive. `project.name`, Teilstrings, Fuzzy Matching, das aktuelle Arbeitsverzeichnis, der Repository-Name, das einzige gefundene Projekt oder zuletzt verwendete Werte duerfen keine automatische Aufloesung bewirken. Vorschlaege bleiben Vorschlaege; auch ein einzelner Vorschlag ergibt niemals `resolved`.
+
+```powershell
+.\tools\deployment-engine\bin\deployment-engine.ps1 discover-projects `
+    -ProjectsRoot 'D:\Projekte\shk-momm-firma\projects' `
+    -Format Json
+```
+
+```powershell
+.\tools\deployment-engine\bin\deployment-engine.ps1 resolve-project `
+    -ProjectsRoot 'D:\Projekte\shk-momm-firma\projects' `
+    -ProjectIdentifier 'shk-momm-kundendaten' `
+    -Format Json
+```
+
+Discovery-Ergebnisse verwenden `schemaVersion = "0.1"`, `operation = "project-discovery"`, einen kanonischen `projectsRoot`, eine strukturierte `projects`-Liste und maschinenlesbare `issues`. Resolution-Ergebnisse verwenden `operation = "project-resolution"`, `status`, `requestedIdentifier`, `matchType`, `project`, `suggestions` und `issues`.
+
+Der Project Catalog startet keinen Analyzer, erzeugt keinen Execution Plan, schreibt keine Dateien ohne expliziten `-OutputPath`, fuehrt keine Remote-Operationen aus und erzeugt keine Deployment-Artefakte.
+
+Die Project-Catalog-Domaene verwendet keine expliziten `exit`-Anweisungen. Aufrufe per Dot-Sourcing oder per `&` liefern Werte beziehungsweise strukturierte JSON-Ausgaben und beenden keine vorhandene PowerShell-Sitzung. Erwartbare fachliche Ergebnisse werden ueber Statuswerte wie `resolved`, `not-found`, `invalid`, `ineligible` oder `identifier-conflict` dargestellt; technische Aufruffehler duerfen als kontrollierte PowerShell-Exceptions erscheinen.
+
+Die neuen CLI-Zweige `discover-projects` und `resolve-project` reichen die Domain-Ausgabe weiter und verwenden ebenfalls keine expliziten `exit`-Anweisungen. Der historische CLI-weite Bestand anderer Commands enthaelt noch explizite `exit`-Anweisungen. Deren Vereinheitlichung ist eine separate technische Folgemassnahme und nicht Teil dieses Project-Catalog-Meilensteins.
 
 ## Environment-Vertrag
 

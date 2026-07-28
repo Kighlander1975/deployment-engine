@@ -2,6 +2,31 @@
 
 Die Pipeline der Version `0.1` ist bewusst in Analyse, Planerzeugung, Capability-Aufloesung, Tool Discovery, Adapterentscheidung, Runtime Directory Management, Clean-Tree Assessment, Deployment Strategy, Command Generation, Command Session, Execution Admission, Executor Request, Local Operation Executor, Automation Event Builder, Execution Orchestrator und spaetere Remote-/Deployment-Orchestrierung getrennt.
 
+## Project Catalog
+
+Der Project Catalog ist eine eigenstaendige Domaene vor der Deployment Analysis.
+
+```text
+CLI
+    -> Project Catalog
+    -> Manifest-Erkennung und Validierung
+    -> strukturiertes Discovery- oder Resolution-Ergebnis
+```
+
+Die CLI ist dabei nur Adapter. Manifest-Suche, Eligibility-Bewertung, Identifier-Konflikte und Resolution-Regeln liegen in der Project-Catalog-Domaene.
+
+`discover-projects` verlangt einen expliziten `ProjectsRoot`. Die Suche ist read-only, bleibt innerhalb dieses Roots, folgt keinen Reparse-Directories wie Junctions oder Symlinks und verwendet eine begrenzte Verzeichnistiefe. Gefunden werden Dateien mit dem Namen `deployment.project.json`. Das Ergebnis ist deterministisch nach normalisierter Projekt-ID und Manifestpfad sortiert.
+
+`resolve-project` verlangt `ProjectsRoot` und `ProjectIdentifier`. Die Resolution verwendet intern den Katalog und loest nur exakte `project.id`-Werte oder exakte `project.aliases` auf, jeweils case-insensitive. `project.name` wird nicht aufgeloest. Teilstrings, Starts-with, Contains, Edit Distance, Fuzzy Matching, aktuelles Arbeitsverzeichnis, Repository-Name, einziges Projekt und zuletzt verwendete Werte sind keine automatische Aufloesung.
+
+Eligibility-Werte sind `eligible`, `ineligible`, `invalid-manifest`, `duplicate-id` und `identifier-conflict`. Resolution-Statuswerte sind `resolved`, `not-found`, `ambiguous`, `invalid`, `ineligible` und `identifier-conflict`. Vorschlaege duerfen ausgegeben werden, bleiben aber unverbindlich; auch ein einzelner Vorschlag ergibt nicht `resolved`.
+
+Der Project Catalog startet keinen Analyzer, erzeugt keinen Execution Plan, fuehrt keine Tool Discovery aus, erzeugt keine Archive, startet kein SSH/SCP und schreibt nur dann eine Datei, wenn `-OutputPath` explizit gesetzt ist.
+
+Domain-Skripte im Project Catalog verwenden keine expliziten `exit`-Anweisungen. Sie liefern strukturierte Ergebnisobjekte beziehungsweise JSON und duerfen eine bestehende PowerShell-Sitzung bei Aufruf mit Dot-Sourcing oder `&` nicht beenden. Erwartbare fachliche Ablehnungen werden als Statuswerte modelliert; technische Fehler werden per `throw` signalisiert.
+
+Die CLI-Zweige fuer `discover-projects` und `resolve-project` folgen derselben No-Exit-Regel. Andere historisch vorhandene CLI-Zweige enthalten noch explizite `exit`-Anweisungen; deren Refactoring bleibt als abgegrenzte technische Folgemassnahme offen.
+
 ## Project Detection
 
 Die Engine liest das Projektmanifest, validiert Pflichtfelder und prueft, ob Projektroot und Application Root vorhanden sind. Pfade werden unabhaengig vom aktuellen Arbeitsverzeichnis aufgeloest.

@@ -11,6 +11,7 @@ Die Engine soll aus einem bekannten Git-Zustand einen nachvollziehbaren Deployme
 ## Zentrale Begriffe
 
 - `Engine`: Projektuebergreifender Kern fuer Analyse, Klassifikation, Regelbewertung und Planerzeugung.
+- `Project Catalog`: Projektuebergreifende read-only Domaene fuer Project Discovery und exakte Project Resolution vor jeder Analyse.
 - `Adapter`: Spaetere projekttyp- oder zielsystembezogene Umsetzungsschicht fuer Ausfuehrung und Verifikation.
 - `Projektmanifest`: Projektlokale Konfiguration, die Pfade, Schutzregeln, Klassifikationen und Trigger beschreibt.
 - `Baseline`: Der bereits deployte oder explizit gewaehlte Ausgangscommit.
@@ -20,6 +21,10 @@ Die Engine soll aus einem bekannten Git-Zustand einen nachvollziehbaren Deployme
 ## Engine, Adapter und Manifest
 
 Die Engine enthaelt keine projektspezifischen Annahmen ausserhalb des Manifests. Das Manifest beschreibt, welche Pfade welche Bedeutung haben und welche Regeln fuer das Projekt gelten. Adapter werden spaeter die Ausfuehrung gegen konkrete Zielsysteme kapseln.
+
+Der Project Catalog verwendet dasselbe Manifestmodell, liegt aber zeitlich vor Analyzer und Planner. Er inventarisiert Projekte unter einem expliziten Projects Root, bewertet `project.deployable`, erkennt Konflikte bei `project.id` und `project.aliases` und loest nur exakte IDs oder Aliase auf. `project.name` bleibt Anzeigename und ist kein Resolution-Identifier.
+
+Codex bleibt fuer natuerliche Sprache, Auswahl, Bestaetigung und Stop-and-Wait-Orchestrierung verantwortlich. Die Engine trifft keine Benutzerauswahl und verwendet kein Default-Projekt.
 
 ## Abgrenzung zu Kopier- oder ZIP-Skripten
 
