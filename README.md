@@ -1,5 +1,9 @@
 # SHK-MOMM Deployment Engine
 
+> **Status: pausiert.**
+>
+> Die Arbeiten an diesem Tool sind vorerst pausiert, nicht aufgegeben. Der aktuelle Stand wird eingefroren, weil der explorative Deployment-Lauf gezeigt hat, dass die angewendete Aktivierungsstrategie nicht zum realen Hosting-/Webroot-Modell passt. Eine Fortsetzung darf erst nach einer erneuten Architekturentscheidung zum Live-Working-Directory-, Release- und Webroot-Vertrag erfolgen.
+
 Die SHK-MOMM Deployment Engine ist ein projektuebergreifendes Werkzeug zur nachvollziehbaren Deployment-Analyse, Planerzeugung und spaeteren kontrollierten Ausfuehrung von Deployments.
 
 Version `0.1` liefert ausschliesslich Analyse- und Planungsfunktionen. Sie liest ein Projektmanifest, vergleicht zwei Git-Commits, klassifiziert geaenderte Artefakte und kann daraus einen strukturierten Execution Plan mit verbindlichen Human Gates ableiten.
@@ -149,9 +153,9 @@ Adapter Eligibility Evaluation bewertet aus einem Assessed Tool Inventory, welch
 
 Adapter Selection liest ausschliesslich das Eligibility-Ergebnis und waehlt deterministisch genau einen eligible Adapter aus, sofern eine Auswahl moeglich ist. Sie bewertet keine Tool-Verfuegbarkeit neu, erzeugt keine Commands und fuehrt nichts aus.
 
-Deployment Strategy kombiniert den Resolved Execution Plan mit der Adapter Selection zu einem fachlichen Ablauf fuer spaetere Command Generation. Sie beschreibt Operationen, Akteure, Orte, Human Gates und Rueckmeldeanforderungen, erzeugt aber keine konkreten Shell-, SSH- oder SCP-Kommandos und fuehrt nichts aus.
+Deployment Strategy kombiniert den Resolved Execution Plan mit der Adapter Selection zu einem fachlichen Ablauf fuer spaetere Command Generation. Sie beschreibt Operationen, Akteure, Orte, Human Gates und Rueckmeldeanforderungen, erzeugt aber keine konkreten Shell-, Transport- oder Remote-Kommandos und fuehrt nichts aus.
 
-Command Generation erzeugt aus Resolved Execution Plan und Deployment Strategy einen strukturierten Command Plan. `program` und `arguments` sind die fuehrenden Daten; `renderedCommand` ist nur eine deterministische Darstellung zum Kopieren. Die Phase fuehrt nichts aus und erlaubt keine automatische Ausfuehrung.
+Command Generation erzeugt aus Resolved Execution Plan und Deployment Strategy einen strukturierten Command Plan. `program` und `arguments` sind die fuehrenden Daten; `renderedCommand` ist nur eine deterministische Darstellung zum Kopieren. Die Phase fuehrt nichts aus und erlaubt keine automatische Ausfuehrung. Deployment Target, Artifact Transport und Remote Execution sind getrennte Vertraege.
 
 Command Session trennt den Command Plan vom spaeteren Laufzeitstatus. Sie erzeugt einen deterministischen Session-Zustand, verarbeitet ausschliesslich strukturierte Events und fuehrt keine Commands aus.
 
@@ -159,7 +163,7 @@ Execution Admission ist die letzte analytische Sicherheitsbarriere vor einem spa
 
 Executor Request ueberfuehrt eine freigegebene, aber weiterhin deaktivierte Execution Admission in einen validierten Vertrag fuer den Local Operation Executor. Der Request bleibt `status = disabled`, enthaelt `operationType` und strukturierte `operation`-Daten und veraendert weder Command Session noch Events.
 
-Local Operation Executor V1 verarbeitet ausschliesslich solche Executor Requests und fuehrt nur explizit erlaubte lokale Operationen aus. Unterstuetzt sind `source.validate` und `archive.create`; SSH, SCP, generische Shell-Ausfuehrung, Netzwerkzugriff, Session-Mutation und Event-Erzeugung bleiben ausgeschlossen.
+Local Operation Executor V1 verarbeitet ausschliesslich solche Executor Requests und fuehrt nur explizit erlaubte lokale Operationen aus. Unterstuetzt sind `source.validate` und `archive.create`; Artifact Transport, Remote Execution, generische Shell-Ausfuehrung, Netzwerkzugriff, Session-Mutation und Event-Erzeugung bleiben ausgeschlossen.
 
 ## Unterstuetzter Umfang in Version 0.1
 
@@ -233,6 +237,30 @@ Der Analyzer liest dafuer ausschliesslich versionierte Vertragsdateien wie `lara
 
 Unbekannte, hinzugefuegte oder entfernte Schluessel sowie unvollstaendige Regeln erzeugen Review-Bedarf. Die spaetere Umsetzung bleibt ein Human-Gate; es wird keine Environment-Datei automatisch erzeugt oder veraendert.
 
+## Remote-Target-Vertrag
+
+Das Projektmanifest bleibt projektbezogen. `deployment.serverRoot` ist eine logische, noch nicht aufgeloeste Zielwurzel und darf nicht als absoluter Remote-Pfad fuer Command Generation interpretiert werden. `project.applicationRoot` bleibt der relative lokale Anwendungspfad innerhalb des Projekt-Repositories.
+
+Umgebungsbezogene, nicht geheime Deployment-Zieldaten liegen in einem separaten versionierten Target-Artefakt, zum Beispiel:
+
+```text
+deployment.targets/
+└── staging.json
+```
+
+Die Target-Konfiguration enthaelt keine Hostnamen, Benutzernamen, Zugangsdaten oder Secrets. Minimaler Inhalt:
+
+```json
+{
+  "schemaVersion": "0.1",
+  "targetId": "staging",
+  "remoteRoot": "/var/www/demo",
+  "applicationPath": "app.example.test"
+}
+```
+
+Die Remote-Target-Resolution kombiniert ausschliesslich `target.remoteRoot` mit `target.applicationPath`, normalisiert den Pfad, verhindert `.`-/`..`-Segmente und Pfadfluchten und uebernimmt das gepruefte Ergebnis als `environment.applicationRemoteDirectory` in den resolved Execution Plan. `target.applicationPath` ist required, relativ, POSIX-formatiert und target-spezifisch. `project.applicationRoot` wird nicht fuer die Remote-Zielauflösung verwendet. Der Command Plan Builder bleibt strikt und fuehrt keine eigene Pfadauflösung durch.
+
 ## Seeder-Review
 
 Geaenderte Dateien unter der Seeder-Klassifikation werden statisch analysiert. Die Engine erkennt einfache Hinweise wie betroffene Models, Tabellen, Schreiboperationen und potenziell destruktive Operationen und erzeugt daraus eine Review-Zusammenfassung.
@@ -268,6 +296,7 @@ New-Item -ItemType Directory -Force -Path `
 .\tools\deployment-engine\bin\deployment-engine.ps1 plan `
     -Analysis (Join-Path $runPath 'input\deployment-analysis.json') `
     -Manifest C:\path\to\your-project\deployment.project.json `
+    -TargetPath C:\path\to\your-project\deployment.targets\staging.json `
     -Format Text
 ```
 
@@ -277,6 +306,7 @@ JSON-Ausgabe:
 .\tools\deployment-engine\bin\deployment-engine.ps1 plan `
     -Analysis (Join-Path $runPath 'input\deployment-analysis.json') `
     -Manifest C:\path\to\your-project\deployment.project.json `
+    -TargetPath C:\path\to\your-project\deployment.targets\staging.json `
     -Format Json `
     -OutputPath (Join-Path $runPath 'plans\execution-plan.json')
 ```
@@ -335,10 +365,13 @@ Statuswerte sind `available`, `not-found`, `version-unavailable`, `probe-failed`
 ```powershell
 .\tools\deployment-engine\bin\deployment-engine.ps1 remote-discovery-plan `
     -Platform linux `
+    -ExecutionPlanPath (Join-Path $runPath 'plans\execution-plan.json') `
     -OutputPath (Join-Path $runPath 'plans\remote-discovery-plan.json')
 ```
 
-Der Plan enthaelt ein Human Gate, einen deterministischen `planFingerprint`, feste Probe-IDs, feste Anzeigebefehle und ein Marker-Template. Vor den Projektprobes wechselt der Benutzer selbst in das bekannte Projektverzeichnis; Projektpfade werden nicht in Shell-Kommandos interpoliert.
+Der resolved Execution Plan enthaelt einen eigenen `executionPlanFingerprint`, der die Identitaet des vollstaendig resolved Plans beschreibt. Der Remote-Discovery-Plan enthaelt zusaetzlich einen deterministischen `planFingerprint` fuer die remote auszufuehrende Discovery. Dieser Fingerprint umfasst Schema-Version, Discovery-Typ, Plattform, Target-Bindung aus dem resolved Plan (`targetId`, `remoteRoot`, `applicationPath`, `applicationRemoteDirectory`, `executionPlanFingerprint`), geordnete Probe-IDs und Anzeigebefehle. Zeitstempel und lokale Pfade gehen nicht ein. Vor den Projektprobes wechselt der Benutzer selbst in das im Plan gebundene Projektverzeichnis; Projektpfade werden nicht in Shell-Kommandos interpoliert.
+
+Eine vorhandene Remote-Discovery-Antwort darf nur dann erneut verwendet werden, wenn ihr Marker-Fingerprint exakt zum neu erzeugten Remote-Discovery-Plan passt. Aendert sich die Target-Resolution, muss der Fingerprint wechseln und die Remote Discovery erneut ausgefuehrt werden.
 
 Nach der manuellen Ausfuehrung wird die vollstaendige Ausgabe im Markerformat ausgewertet:
 
@@ -394,6 +427,32 @@ Das Ergebnis enthaelt `selectedAdapterId` ausschliesslich in der Selection-Ausga
 
 Runtime Directory Management erzeugt unter einem expliziten, bereits vorhandenen Runtime Root ein eindeutiges Run-Verzeichnis mit `artifacts`, `decisions`, `events`, `input`, `inventory`, `logs` und `reports`. Die Ausgabe enthaelt nur Metadaten und Pfade. Die Komponente erzeugt keine Session, startet keinen Executor, prueft kein Git und fuehrt kein Deployment aus.
 
+Runtime-Artefakte sind eigene Laufzeitdaten und gehoeren nicht in den resolved Execution Plan. `archive.create` erzeugt ein strukturiertes Runtime-Artefakt mit `artifactId`, `artifactType`, `archiveFormat`, `localPath`, `fileName`, `fileSize`, `hash`, `executionPlanFingerprint`, `packagingPolicyId`, `packagingPolicyFingerprint`, `packagingValidation` und `createdAt`. Dieses Objekt beschreibt ausschliesslich das erzeugte Build-Artefakt, keine Projektkonfiguration. Runtime-Artefakte werden im Runtime-Verzeichnis als `artifacts/runtime-artifact-*.json` gespeichert und sind strikt an den `executionPlanFingerprint` und die verwendete Packaging Policy gebunden.
+
+Ein Runtime-Artefaktwechsel innerhalb eines laufenden Deployments erfolgt nur ueber ein explizites Reconciliation-Artefakt. Der alte Upload bleibt historisch erhalten, wird aber als `superseded` markiert und ist fuer `artifact.upload`, `remote.artifact.validate`, `remote.artifact.finalize`, `remote.archive.extract`, Composer-Pruefungen und Release-Validierung nicht mehr zulaessig. Genau ein Ersatzartefakt darf `active-candidate` sein. Der Wechsel loescht, ueberschreibt, extrahiert oder aktiviert keine Remote-Datei und springt kontrolliert auf `artifact.upload / WaitingForHuman` zurueck.
+
+Fuer `network-share`-Uploads gilt die Trennung `artifact.upload -> remote.artifact.validate -> remote.artifact.finalize -> remote.release.prepare -> remote.archive.extract`. `artifact.upload` kopiert nur das aktive Runtime-Artefakt in ein artefaktspezifisches `.partial`-Ziel. Die serverseitige Groessen- und Hashpruefung gehoert zu `remote.artifact.validate`; die atomare Umbenennung und finale Existenz-/Groessenpruefung gehoeren zu `remote.artifact.finalize`. Danach bereitet `remote.release.prepare` das run- und artefaktspezifische Release-Verzeichnis unter `.deployment/releases/<deploymentRunId>/<artifactId>` vor. Erst danach darf `remote.archive.extract` geplant werden.
+
+## Packaging Policy
+
+Die Packaging Policy ist der explizite Vertrag fuer Deployment-Artefakte. Sie beschreibt, welche Pfade in ein Deployment-Archiv aufgenommen werden duerfen und welche ausgeschlossen sind. Mindestfelder sind `policyId`, `projectId`, `artifactType`, `vendorStrategy`, `includedPaths`, `excludedPaths`, `executionPlanFingerprint` und `createdAt`. Das Schema liegt unter `schemas/deployment.packaging-policy.schema.json`.
+
+`archive.create` akzeptiert fuer Deployment-Archive keine implizite Vollkopie mehr. Der Executor erwartet eine strukturierte `operation.packagingPolicy`, prueft die Bindung an denselben `executionPlanFingerprint`, wendet `includedPaths` und `excludedPaths` an und erzeugt erst danach das Runtime-Artefakt. Zusaetzlich bleiben harte Sicherheitsausschluesse aktiv: `.env`, `.env.*`, `.git`, private Schluessel, typische Betriebssystem-/IDE-Dateien, temporaere Dateien und lokale Backup-Dateien werden nicht archiviert.
+
+Vendor-Strategien werden bewusst benannt. `exclude-install-on-target-from-lockfiles` bedeutet: `vendor` und `node_modules` werden nicht ins Deployment-Artefakt gepackt; PHP-Abhaengigkeiten muessen aus `composer.lock` auf dem Zielsystem installiert oder anderweitig bereitgestellt werden, Frontend-Abhaengigkeiten muessen vorab lokal in `public/build` gebaut sein. `node_modules` ist kein Runtime-Bestandteil.
+
+## Composer Strategy
+
+Wenn eine Packaging Policy `vendorStrategy = exclude-install-on-target-from-lockfiles` verwendet, muss die Deployment Strategy einen expliziten Composer-Strategy-Vertrag enthalten. Dieser Vertrag beschreibt nur die geplante Vendor-Bereitstellung, nicht das Ergebnis einer laufenden Installation. Mindestinformationen sind Strategy-ID und Version, Composer-Arbeitsverzeichnis, Manifest- und Lockfile-Pfade, Install-Modus `install-from-lock`, Produktionsmodus, Umgang mit Dev-Abhaengigkeiten, Script-/Plugin-Review, Plattformanforderungen und Timeout-/Environment-Policy.
+
+`remote.composer.preflight` ist ein eigener read-only Remote-Execution-Schritt nach `remote.archive.extract`. Er prueft im vorbereiteten Release-Verzeichnis Composer/PHP-Verfuegbarkeit, `composer.json`, `composer.lock`, Lockfile-Frische ueber `composer validate --no-check-publish --no-interaction`, Plattformanforderungen ueber `composer check-platform-reqs --lock --no-interaction`, vorhandene Scripts/Plugins und dass `vendor` nicht bereits durch den Preflight entstanden ist. Der Schritt darf keine Dateien veraendern, kein `composer install` oder `composer update` ausfuehren und keine Plattformanforderungen ignorieren.
+
+`remote.composer.install` bleibt ein eigener, nachgelagerter Human-Command-Schritt. Eine echte Installation benoetigt nach erfolgreichem Preflight eine separate Freigabe und einen eigenen Install-Vertrag. `remote.composer.install.validate` ist der danach getrennte read-only Reconciliation-Schritt; `remote.application.finalize` darf erst nach erfolgreicher Install-Validierung geplant werden.
+
+Der Install-Vertrag ist in `docs/06-composer-install-contract.md` dokumentiert. Fuer das aktuelle Laravel-Projekt erlaubt er kuenftig nur `composer install` im Release-Verzeichnis mit den Flags `--no-dev`, `--prefer-dist`, `--optimize-autoloader` und `--no-interaction`. `composer update`, Plattform-Bypass-Flags und beliebige Zusatzflags sind verboten. Der Vertrag bewertet alle vorhandenen Composer-Scripts und die konfigurierten Plugins feldbezogen; nur `post-autoload-dump` ist als reviewed install-lifecycle Script vorgesehen. Die Ergebnisfelder `ScriptExecutionEvidence`, `ObservedComposerScripts` und `ObservedComposerCommands` trennen Beobachtung von Behauptung.
+
+Jeder Deployment-Schritt besitzt eine explizite Write Boundary. Fuer `remote.composer.install` liegt sie unter `remote.releaseDirectory` und erlaubt nur `vendor`, `vendor/**`, `bootstrap/cache`, `bootstrap/cache/packages.php` und `bootstrap/cache/services.php`. Andere Dateien unter `bootstrap/cache`, `.env`, `storage/**`, `public/**`, `.deployment/**`, Shared Storage, Live Release, Deployment-Metadaten und Berechtigungen sind ausserhalb der Grenze.
+
 ## Clean-Tree bewerten
 
 ```powershell
@@ -413,7 +472,17 @@ Clean-Tree Assessment bewertet den Git-Zustand eines Repository-Pfads rein lesen
     -OutputPath (Join-Path $runPath 'decisions\deployment-strategy.json')
 ```
 
-Die Deployment Strategy ist eine reine Planungsphase nach Adapter Selection und vor spaeterer Command Generation. Sie unterscheidet `automation`, `human-decision`, `human-command` und `review`. Lokale automatisierbare Schritte werden als `automation` modelliert. Ein zentrales Deployment-Approval ist ein `human-decision` Gate. SSH- und Upload-nahe Schritte bleiben in V1 `human-command`: Die Strategy markiert nur, dass spaeter ein vollstaendig kopierbarer Befehl erzeugt werden muss; der Benutzer fuehrt ihn aus und liefert strukturierte Rueckmeldung wie Exit-Status, stdout und stderr.
+Die Deployment Strategy ist eine reine Planungsphase nach Adapter Selection und vor spaeterer Command Generation. Sie unterscheidet `automation`, `human-decision`, `human-command` und `review`. Lokale automatisierbare Schritte werden als `automation` modelliert. Ein zentrales Deployment-Approval ist ein `human-decision` Gate. Upload-nahe Schritte werden als Artifact Transport modelliert, Remote-Schritte als Remote Execution. Beide bleiben in V1 `human-command`: Die Strategy markiert nur, dass spaeter ein vollstaendig kopierbarer Block erzeugt werden muss; der Benutzer fuehrt ihn aus und liefert strukturierte Rueckmeldung wie Exit-Status, stdout und stderr.
+
+Die Strategy trennt drei Vertraege:
+
+- Deployment Target: `targetId`, `remoteRoot`, `applicationPath` und das resolved `applicationRemoteDirectory`; keine SSH-, Host- oder Transportdaten.
+- Artifact Transport: zunaechst Adapter `network-share`; beschreibt ausschliesslich den Artefakttransfer ueber das vorhandene Netzlaufwerk und enthaelt keine Remote-Kommandos.
+- Remote Execution: zunaechst Modus `interactive-ssh`; die Engine erzeugt nur strukturierte Befehlsbloecke fuer eine bereits geoeffnete SSH-Sitzung, startet oder beendet keine Verbindung, liest keinen SSH-Kontext und leitet keine Hostdaten aus Prompts ab.
+
+Der Remote-Deployment-Arbeitsbereich liegt innerhalb der Anwendung unter `.deployment/` und enthaelt mindestens `.deployment/uploads`, `.deployment/work`, `.deployment/releases` und `.deployment/metadata`. Run-spezifische Releases liegen unter `.deployment/releases/<deploymentRunId>/<artifactId>`. Die Anlage dieses verschachtelten Zielverzeichnisses ist Aufgabe von `remote.release.prepare`; sie prueft absolute Pfade, die kanonische Bindung unter `.deployment/releases`, erwartete Run-/Artefaktsegmente, Symlink-Grenzen, Nicht-Live-Ziel und Nicht-Wiederverwendung. Rollback ist als Vertrag vorbereitet: maximal zwei vollstaendige Rollback-Staende, Cleanup nur nach erfolgreicher Finalisierung, vorhandene Rollback-Staende bleiben bei Fehlern erhalten.
+
+Die Strategy enthaelt ausserdem einen Composer-Strategy-Vertrag fuer Laravel-Deployments mit ausgeschlossener `vendor`-Auslieferung. Dieser Vertrag ist bewusst nicht Teil des resolved Execution Plans und aendert dessen Fingerprint nicht; er invalidiert aber Deployment Strategy und Command Plan, wenn er neu eingefuehrt oder geaendert wird.
 
 Statuswerte sind `ready`, `incomplete` und `blocked`. Der normale V1-Erfolgsfall ist `ready`, weil eine vorherige Adapter Selection mit `status = selected` erforderlich ist. Bei `incomplete` oder `blocked` aus der Adapter Selection wird keine ausfuehrbare Strategy erzeugt. Die Phase erzeugt keine Commands, fuehrt keine Git-Pruefung aus, legt kein Runtime-Verzeichnis an und startet keinen Executor.
 
@@ -423,12 +492,31 @@ Statuswerte sind `ready`, `incomplete` und `blocked`. Der normale V1-Erfolgsfall
 .\tools\deployment-engine\bin\deployment-engine.ps1 generate-commands `
     -ExecutionPlanPath (Join-Path $runPath 'plans\execution-plan.json') `
     -DeploymentStrategyPath (Join-Path $runPath 'decisions\deployment-strategy.json') `
+    -RuntimeArtifactPath (Join-Path $runPath 'artifacts\runtime-artifact-0002-1-runtime-artifact-....json') `
     -OutputPath (Join-Path $runPath 'decisions\command-plan.json')
 ```
 
 Der Command Plan beschreibt spaetere Ausfuehrungseinheiten, fuehrt sie aber nicht aus. Jeder Eintrag besitzt `program`, `arguments`, `renderedCommand`, Anzeigeinformationen, Feedback-Anforderungen und Safety-Flags. `program` und `arguments` sind fachlich fuehrend; `renderedCommand` wird nur daraus erzeugt.
 
-In V1 sind `local-operation`, `ssh` und `scp` als Programmart unterstuetzt. `local-operation` ist ein nicht ausfuehrbarer Platzhalter fuer spaetere lokale Automation. SSH- und SCP-Eintraege bleiben `copy-and-run`, `copyable = true` und `executionPermitted = false`; der Benutzer fuehrt sie spaeter manuell aus und liefert Rueckmeldung. Fehlen SSH-Ziel, absoluter Remote-Pfad oder lokaler Artefaktpfad, wird der Command Plan `incomplete` statt Pfade oder Ziele zu erfinden. Target Discovery, Runtime Directory Management und Executor bleiben spaetere Bausteine.
+In V1 sind `local-operation`, `network-share` und `interactive-ssh` als Programmart unterstuetzt. `local-operation` ist ein nicht ausfuehrbarer Platzhalter fuer spaetere lokale Automation. `network-share` beschreibt ausschliesslich den lokalen Artefakttransport ins Netzlaufwerk, aktuell als kopierbarer PowerShell-`Copy-Item`-Block. `interactive-ssh` beschreibt ausschliesslich Remote-Ausfuehrung als kopierbaren Befehlsblock fuer eine bereits geoeffnete SSH-Sitzung. Interaktive SSH-Bloecke duerfen niemals `exit`, `logout` oder vergleichbare Sitzungsabbrueche enthalten; Fehler werden ueber Ergebnisvariablen und strukturierte Ausgabe gemeldet. Beide Human-Command-Arten bleiben `copy-and-run`, `copyable = true` und `executionPermitted = false`; der Benutzer fuehrt sie spaeter manuell aus und liefert Rueckmeldung.
+
+Der Command Plan Builder fuehrt keine eigene Remote-Target-Aufloesung durch und erfindet keine Ziele. Fehlt der absolute resolved Remote-Pfad, wird kontrolliert abgelehnt. Fehlt fuer `artifact.upload` das Runtime-Artefakt, wird der Command Plan `incomplete`. Ist ein Runtime-Artefakt vorhanden, muss dessen `executionPlanFingerprint` exakt zum resolved Execution Plan passen und es muss eine Packaging-Policy-Bindung enthalten; falsche Fingerprints oder unvollstaendige Artefakte werden hart abgelehnt. `artifact.upload` darf den lokalen Anwendungspfad nicht kennen und verwendet ausschliesslich das Runtime-Artefakt fuer den lokalen Archivpfad und Dateinamen. Ein fehlendes SSH-Ziel macht den Plan nicht mehr unvollstaendig, weil `interactive-ssh` bewusst keine Verbindung startet und keinen Hostnamen in den Block einbettet.
+
+Der Datenfluss ist:
+
+```text
+project.applicationRoot
+    -> archive.create
+    -> Runtime-Artefakt
+    -> artifact.upload
+    -> Remote-Archiv
+    -> remote.release.prepare
+    -> remote.archive.extract
+    -> remote.composer.preflight
+    -> remote.composer.install
+```
+
+Der Execution Plan beschreibt das Deployment. Das Runtime-Artefakt beschreibt Ergebnisse dieses konkreten laufenden Deployments. Beides darf nicht vermischt werden.
 
 ## Command Session verwalten
 
@@ -462,7 +550,7 @@ Execution Admission prueft den gesamten Command Plan und die gesamte Command Ses
 
 In V1 wird ausschliesslich lokale Automation mit `actor = automation`, `executionLocation = local`, `executionMode = automatic`, `program = local-operation` und Item-Status `ready` als `eligible-but-disabled` markiert. `executionEligible = true` bedeutet dabei nur fachliche Eignung fuer einen spaeteren lokalen Executor; `executionAdmitted` bleibt immer `false`.
 
-Human Decisions und Human Commands ergeben `requires-human`, Review Items ergeben `requires-review`. Remote-Ausfuehrung, SSH, SCP und lokale-zu-remote Schritte werden niemals automatisch zugelassen. Die Ausgabe enthaelt eine konstante `executionPolicy` mit `productiveExecutionAllowed = false`, `processStartAllowed = false`, `networkAccessAllowed = false` und `remoteExecutionAllowed = false`. Die Phase erzeugt keine Events, startet keine Prozesse, baut kein Netzwerk auf, veraendert keine Session und fuehrt kein Deployment aus. Der Status `admitted` wird erst mit dem spaeteren Executor eingefuehrt.
+Human Decisions und Human Commands ergeben `requires-human`, Review Items ergeben `requires-review`. Artifact Transport, Remote Execution und alte lokale-zu-remote Schritte werden niemals automatisch zugelassen. Die Ausgabe enthaelt eine konstante `executionPolicy` mit `productiveExecutionAllowed = false`, `processStartAllowed = false`, `networkAccessAllowed = false` und `remoteExecutionAllowed = false`. Die Phase erzeugt keine Events, startet keine Prozesse, baut kein Netzwerk auf, veraendert keine Session und fuehrt kein Deployment aus. Der Status `admitted` wird erst mit dem spaeteren Executor eingefuehrt.
 
 ## Executor Request erzeugen
 
@@ -474,7 +562,7 @@ Human Decisions und Human Commands ergeben `requires-human`, Review Items ergebe
     -OutputPath (Join-Path $runPath 'decisions\executor-request.json')
 ```
 
-Der Executor Request liest Command Plan, Command Session und Execution Admission und validiert, dass alle drei Artefakte dasselbe aktuelle lokale Automation-Item referenzieren. Er wird nur fuer `eligible-but-disabled` mit `executionEligible = true` und `executionAdmitted = false` erzeugt. Human Commands, Remote-Ausfuehrung, SSH, SCP, aktivierte Plan-Ausfuehrung, nicht mehr bereite Items, inkonsistente IDs und secret-artige Inhalte werden kontrolliert abgelehnt.
+Der Executor Request liest Command Plan, Command Session und Execution Admission und validiert, dass alle drei Artefakte dasselbe aktuelle lokale Automation-Item referenzieren. Er wird nur fuer `eligible-but-disabled` mit `executionEligible = true` und `executionAdmitted = false` erzeugt. Human Commands, Artifact Transport, Remote Execution, aktivierte Plan-Ausfuehrung, nicht mehr bereite Items, inkonsistente IDs und secret-artige Inhalte werden kontrolliert abgelehnt.
 
 Das Ergebnis ist ein deterministisches JSON-Objekt mit `executorRequestType = deployment-executor-request` und `status = disabled`. Es beschreibt den `local-operation`-Vertrag inklusive `operationType`, strukturierter `operation`-Daten und `expectedEvents`, startet aber keinen Prozess, erzeugt keine Events, mutiert keine Session, verwendet kein Netzwerk und fuehrt kein Deployment aus.
 
@@ -486,9 +574,11 @@ Das Ergebnis ist ein deterministisches JSON-Objekt mit `executorRequestType = de
     -OutputPath (Join-Path $runPath 'decisions\executor-result.json')
 ```
 
-V1 akzeptiert nur `deployment-executor-request` mit `status = disabled`, `actor = automation`, `executionLocation = local`, `executionMode = automatic`, `program = local-operation` und explizitem `operationType`. `source.validate` prueft ein vorhandenes lokales Quellverzeichnis read-only. `archive.create` erzeugt ein ZIP-Archiv aus einem expliziten Quellverzeichnis an einem expliziten, noch nicht vorhandenen Artefaktpfad.
+V1 akzeptiert nur `deployment-executor-request` mit `status = disabled`, `actor = automation`, `executionLocation = local`, `executionMode = automatic`, `program = local-operation` und explizitem `operationType`. `source.validate` prueft ein vorhandenes lokales Quellverzeichnis read-only. `archive.create` erzeugt ein ZIP-Archiv aus einem expliziten Quellverzeichnis an einem expliziten, noch nicht vorhandenen Artefaktpfad und gibt danach ein strukturiertes Runtime-Artefakt zurueck. Fuer `archive.create` ist eine Packaging Policy Pflicht.
 
-Archivierung schliesst mindestens `.env`, `.env.*`, `.git`, Schluesseldateien und typische private Key-Dateinamen aus. Bestehende Archive werden nicht ueberschrieben. Das Ergebnis ist ein `deployment-executor-result` mit `completed`, `failed` oder `rejected` und enthaelt immer die unveraenderte `sessionId` aus dem Executor Request; auch `failed` und `rejected` werden als parsebares JSON ausgegeben, sofern der Request strukturell verarbeitbar ist.
+Archivierung schliesst mindestens `.env`, `.env.*`, `.git`, Schluesseldateien, typische private Key-Dateinamen, Betriebssystem-/IDE-Dateien, temporaere Dateien und lokale Backup-Dateien aus. Persistente Laufzeitdaten wie `storage/app/private/**`, Logs, Framework-Cache, Sessions und Views gehoeren nicht in ein normales Deployment-Artefakt. Bestehende Archive werden nicht ueberschrieben. Das Ergebnis ist ein `deployment-executor-result` mit `completed`, `failed` oder `rejected` und enthaelt immer die unveraenderte `sessionId` aus dem Executor Request; auch `failed` und `rejected` werden als parsebares JSON ausgegeben, sofern der Request strukturell verarbeitbar ist.
+
+Shared Storage wird ueber einen expliziten Projektvertrag modelliert. Der `sharedStorage.root` ist relativ zur resolved `ApplicationRemoteDirectory`; Eintraege definieren `sharedPath`, `releaseLinkPath`, `pathKind`, `conflictPolicy` und `initializationPolicy`. Fuer `shk-momm-kundendaten` ist ausschliesslich `laravel_app/storage/app/private` als persistent geteilter privater Anwendungsdatenbereich konfiguriert. Der Prepare-Schritt darf nur das konfigurierte Shared-Ziel beziehungsweise fehlende Eltern innerhalb des Shared-Roots sowie den konfigurierten Release-Link schreiben. Bestehende Daten werden nicht kopiert, verschoben, geloescht, zusammengefuehrt oder ueberschrieben.
 
 ## Automation Events erzeugen
 
@@ -527,7 +617,7 @@ Der Execution Orchestrator V1 koordiniert nur bestehende Bausteine. Er erzeugt e
 
 Bei zulaessiger lokaler Automation verwendet der Orchestrator die bestehende Kette `Execution Admission -> Executor Request -> automation-started Event -> Command Session Update -> Local Operation Executor -> automation-result Event -> Command Session Update`. Session-Zustaende werden ausschliesslich durch bestehende Events veraendert. Unterstuetzt sind nur die vorhandenen lokalen Operationen `source.validate` und `archive.create`.
 
-Der Orchestrator beendet den Lauf mit `completed`, `failed`, `blocked`, `cancelled`, `waiting-for-human` oder kontrolliert `rejected`. Human Decisions, Human Commands und Review Gates werden nicht automatisch beantwortet; der Lauf pausiert mit `waiting-for-human`. Alle Zwischenartefakte und `reports/execution-summary.json` liegen im erzeugten Runtime-Verzeichnis. V1 ist kein vollstaendiges Deployment, fuehrt kein SSH/SCP aus, nutzt kein Netzwerk, macht kein Git-Staging, keinen Commit, keinen Push, keinen Reset und keinen Rollback.
+Der Orchestrator beendet den Lauf mit `completed`, `failed`, `blocked`, `cancelled`, `waiting-for-human` oder kontrolliert `rejected`. Human Decisions, Human Commands und Review Gates werden nicht automatisch beantwortet; der Lauf pausiert mit `waiting-for-human`. Alle Zwischenartefakte und `reports/execution-summary.json` liegen im erzeugten Runtime-Verzeichnis. V1 fuehrt weder Artifact Transport noch Remote Execution automatisch aus, nutzt kein Netzwerk, macht kein Git-Staging, keinen Commit, keinen Push, keinen Reset und keinen Rollback.
 
 Ein pausierter lokaler Lauf kann mit einem explizit bereitgestellten Session-Event fortgesetzt werden:
 

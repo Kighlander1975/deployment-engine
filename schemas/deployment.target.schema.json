@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/Kighlander1975/deployment-engine/main/schemas/deployment.target.schema.json",
+  "title": "SHK-MOMM Deployment Target Configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "targetId",
+    "remoteRoot",
+    "applicationPath"
+  ],
+  "properties": {
+    "$schema": { "type": "string" },
+    "schemaVersion": { "type": "string", "const": "0.1" },
+    "targetId": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "remoteRoot": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Absolute POSIX base path on the deployment target. Must not contain backslashes, empty segments, '.' segments or '..' segments.",
+      "pattern": "^/(?!.*\\\\)(?!.*//)(?!.*(?:^|/)\\.\\.?(/|$)).*"
+    },
+    "applicationPath": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Relative POSIX application path inside remoteRoot. Must not be derived from project.applicationRoot or terminal context.",
+      "pattern": "^(?!/)(?!.*\\\\)(?!.*//)(?!.*(?:^|/)\\.\\.?(/|$)).+"
+    }
+  },
+  "not": {
+    "anyOf": [
+      { "required": ["host"] },
+      { "required": ["hostname"] },
+      { "required": ["user"] },
+      { "required": ["username"] },
+      { "required": ["password"] },
+      { "required": ["token"] },
+      { "required": ["secret"] }
+    ]
+  }
+}

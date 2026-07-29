@@ -47,7 +47,11 @@
       "required": ["environment", "serverRoot", "markerFile"],
       "properties": {
         "environment": { "type": "string", "minLength": 1 },
-        "serverRoot": { "type": "string", "minLength": 1 },
+        "serverRoot": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Logical, not-yet-resolved deployment target root. Absolute remote roots belong in deployment target configuration."
+        },
         "markerFile": { "type": "string", "minLength": 1 }
       }
     },
@@ -129,6 +133,48 @@
             }
           }
         }
+      }
+    },
+    "sharedStorage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["root", "directories", "files"],
+      "properties": {
+        "root": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?!/)(?!.*(^|/)\\.\\.(/|$))(?!.*(^|/)\\.(/|$))(?!.*//).+"
+        },
+        "directories": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/sharedStorageEntry" }
+        },
+        "files": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/sharedStorageEntry" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sharedStorageEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sharedPath", "releaseLinkPath", "pathKind", "conflictPolicy", "initializationPolicy"],
+      "properties": {
+        "sharedPath": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?!/)(?!.*(^|/)\\.\\.(/|$))(?!.*(^|/)\\.(/|$))(?!.*//).+"
+        },
+        "releaseLinkPath": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?!/)(?!.*(^|/)\\.\\.(/|$))(?!.*(^|/)\\.(/|$))(?!.*//).+"
+        },
+        "pathKind": { "type": "string", "enum": ["directory", "file"] },
+        "conflictPolicy": { "type": "string", "enum": ["fail"] },
+        "initializationPolicy": { "type": "string", "enum": ["explicit"] }
       }
     }
   }

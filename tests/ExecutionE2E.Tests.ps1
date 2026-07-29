@@ -49,6 +49,19 @@ function New-E2ECommand {
     }
 }
 
+function New-E2EPackagingPolicy {
+    return [pscustomobject]@{
+        policyId = 'packaging-policy-e2e'
+        projectId = 'e2e'
+        artifactType = 'deployment-archive'
+        vendorStrategy = 'exclude-install-on-target-from-lockfiles'
+        includedPaths = @('**')
+        excludedPaths = @('storage/**', 'vendor/**', 'node_modules/**', 'tests/**', '.git/**', '.deployment/**', 'deployment-runs/**')
+        executionPlanFingerprint = 'execution-plan-fingerprint-e2e'
+        createdAt = '2026-07-28T12:00:00Z'
+    }
+}
+
 function New-E2ECommandPlan {
     param([Parameter(Mandatory = $true)][string] $SourcePath)
     return [pscustomobject]@{
@@ -60,7 +73,7 @@ function New-E2ECommandPlan {
         executionPolicy = [pscustomobject]@{ executionAllowed = $false; automaticExecutionAllowed = $false; remoteExecutionMode = 'copy-and-run' }
         commands = @(
             New-E2ECommand -Id 'source.validate' -Sequence 100 -OperationType 'source.validate' -Operation ([pscustomobject]@{ sourcePath = $SourcePath })
-            New-E2ECommand -Id 'archive.create' -Sequence 200 -OperationType 'archive.create' -DependsOn @('source.validate') -Operation ([pscustomobject]@{ sourcePath = $SourcePath; artifactPath = '' })
+            New-E2ECommand -Id 'archive.create' -Sequence 200 -OperationType 'archive.create' -DependsOn @('source.validate') -Operation ([pscustomobject]@{ sourcePath = $SourcePath; artifactPath = ''; executionPlanFingerprint = 'execution-plan-fingerprint-e2e'; packagingPolicy = New-E2EPackagingPolicy })
             New-E2ECommand -Id 'post.approval.source.validate' -Sequence 400 -OperationType 'source.validate' -DependsOn @('deployment.approval') -Operation ([pscustomobject]@{ sourcePath = $SourcePath })
         )
         humanGates = @(
@@ -113,6 +126,12 @@ try {
     Assert-True (Test-Path -LiteralPath $start.runtimeDirectory -PathType Container) 'Runtime directory must be created.'
     Assert-True ($start.runtimeDirectory.StartsWith($runtimeRoot, [System.StringComparison]::OrdinalIgnoreCase)) 'Runtime directory must be below test runtime root.'
     Assert-True (Test-Path -LiteralPath (Join-Path $start.runtimeDirectory 'artifacts/deployment.zip') -PathType Leaf) 'Archive must exist after initial automation.'
+    $runtimeArtifactFiles = @(Get-ChildItem -LiteralPath (Join-Path $start.runtimeDirectory 'artifacts') -Filter 'runtime-artifact-*.json' -File)
+    Assert-Equal $runtimeArtifactFiles.Count 1 'Initial E2E run must persist one runtime artifact metadata file.'
+    $runtimeArtifact = Read-Json -Path $runtimeArtifactFiles[0].FullName
+    Assert-Equal $runtimeArtifact.artifactType 'deployment-archive' 'Runtime artifact must describe deployment archive.'
+    Assert-Equal $runtimeArtifact.executionPlanFingerprint 'execution-plan-fingerprint-e2e' 'Runtime artifact must be bound to execution plan fingerprint.'
+    Assert-Equal $runtimeArtifact.packagingPolicyId 'packaging-policy-e2e' 'Runtime artifact must be bound to packaging policy.'
     Assert-Equal @(Get-ChildItem -LiteralPath (Join-Path $start.runtimeDirectory 'events') -Filter 'external-session-event-*.json' -File).Count 0 'Initial run must not archive external events.'
 
     $runtimeFilesBeforeResume = @(Get-ChildItem -LiteralPath $start.runtimeDirectory -Recurse -File | ForEach-Object { $_.FullName.Substring($start.runtimeDirectory.Length) } | Sort-Object)

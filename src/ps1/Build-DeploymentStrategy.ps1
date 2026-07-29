@@ -224,6 +224,15 @@ function Assert-ResolvedExecutionPlanForStrategy {
     foreach ($field in @('name', 'serverRoot', 'applicationRemoteDirectory', 'markerFile')) {
         Assert-DeploymentStrategyString -Object $ExecutionPlan.environment -Name $field -Context 'Resolved execution plan environment'
     }
+    if (-not (Test-DeploymentStrategyProperty -Object $ExecutionPlan.environment -Name 'sharedStorage') -or -not (Test-DeploymentStrategyObjectLike -Value $ExecutionPlan.environment.sharedStorage)) {
+        throw "Resolved execution plan validation failed: sharedStorage contract is required."
+    }
+    Assert-DeploymentStrategyBool -Object $ExecutionPlan.environment.sharedStorage -Name 'configurationPresent' -Context 'Resolved execution plan sharedStorage'
+    Assert-DeploymentStrategyBool -Object $ExecutionPlan.environment.sharedStorage -Name 'rootResolved' -Context 'Resolved execution plan sharedStorage'
+    if ($ExecutionPlan.environment.sharedStorage.configurationPresent) {
+        Assert-DeploymentStrategyString -Object $ExecutionPlan.environment.sharedStorage -Name 'root' -Context 'Resolved execution plan sharedStorage'
+        Assert-DeploymentStrategyString -Object $ExecutionPlan.environment.sharedStorage -Name 'sharedRootAbsolutePath' -Context 'Resolved execution plan sharedStorage'
+    }
     if (-not (Test-DeploymentStrategyProperty -Object $ExecutionPlan -Name 'steps') -or $null -eq $ExecutionPlan.steps -or @($ExecutionPlan.steps).Count -eq 0) {
         throw "Resolved execution plan validation failed: missing required steps."
     }
@@ -327,7 +336,7 @@ function New-DeploymentStrategyStep {
         [Parameter(Mandatory = $true)][int] $Sequence,
         [Parameter(Mandatory = $true)][string] $OperationType,
         [Parameter(Mandatory = $true)][ValidateSet('automation', 'human-decision', 'human-command', 'review')][string] $Actor,
-        [Parameter(Mandatory = $true)][ValidateSet('local', 'remote', 'local-to-remote', 'decision', 'review')][string] $ExecutionLocation,
+        [Parameter(Mandatory = $true)][ValidateSet('local', 'remote', 'artifact-transport', 'decision', 'review')][string] $ExecutionLocation,
         [string[]] $DependsOn = @(),
         [bool] $CommandGenerationRequired = $false,
         [Parameter(Mandatory = $true)][ValidateSet('none', 'automatic', 'copy-and-run')][string] $CommandExecutionMode,
@@ -380,6 +389,82 @@ function New-DeploymentStrategyApprovalGate {
     }
 }
 
+function New-ComposerStrategyContract {
+    return [pscustomobject]@{
+        composerStrategyId = 'composer-strategy-laravel-staging-install-from-lock'
+        composerStrategyVersion = '0.1'
+        composerExecutableResolution = 'system-composer'
+        composerWorkingDirectory = 'remote.releaseDirectory'
+        composerManifestPath = 'composer.json'
+        composerLockPath = 'composer.lock'
+        requiredPhpVersion = 'from-composer-manifest-and-lock'
+        requiredPhpExtensions = 'from-composer-manifest-and-lock'
+        installMode = 'install-from-lock'
+        productionMode = $true
+        devDependenciesAllowed = $false
+        scriptsAllowed = 'explicit-contract-required'
+        pluginsAllowed = 'according-to-composer-lock-and-policy'
+        networkAccessRequired = $true
+        interactionMode = 'non-interactive'
+        preferredInstallMode = 'dist'
+        optimizationMode = 'optimized-autoloader'
+        platformRequirementMode = 'enforce'
+        installContract = [pscustomobject]@{
+            composerCommand = 'composer install'
+            workingDirectory = 'remote.releaseDirectory'
+            networkAccessPolicy = 'allowed-for-composer-dist-downloads-only'
+            allowedFlags = @('--no-dev', '--prefer-dist', '--optimize-autoloader', '--no-interaction')
+            forbiddenFlags = @('--ignore-platform-reqs', '--ignore-platform-req', '--no-scripts', '--dev', '--working-dir', '--global')
+            scriptExecutionPolicy = [pscustomobject]@{
+                mode = 'reviewed-install-lifecycle-only'
+                allowedScriptNames = @('post-autoload-dump')
+                allowedDefinedCommands = @('Illuminate\Foundation\ComposerScripts::postAutoloadDump', '@php artisan package:discover --ansi')
+                forbiddenScriptNames = @('setup', 'dev', 'test', 'post-update-cmd', 'post-root-package-install', 'post-create-project-cmd', 'pre-package-uninstall')
+                requiresReview = $true
+            }
+            pluginExecutionPolicy = [pscustomobject]@{
+                mode = 'lockfile-present-reviewed-plugins-only'
+                configuredAllowPlugins = @('pestphp/pest-plugin', 'php-http/discovery')
+                lockfilePluginPackagesRequiredForExecution = $true
+                requiresReview = $true
+            }
+            expectedVendorState = [pscustomobject]@{
+                vendorDirectoryPresent = $true
+                devPackagesInstalled = $false
+                generatedFromLockFile = $true
+            }
+            expectedAutoloadState = [pscustomobject]@{
+                autoloadFile = 'vendor/autoload.php'
+                optimizedAutoloader = $true
+                packageDiscoveryFiles = @('bootstrap/cache/packages.php', 'bootstrap/cache/services.php')
+            }
+            writeBoundary = [pscustomobject]@{
+                root = 'remote.releaseDirectory'
+                allowedPaths = @('vendor', 'vendor/**', 'bootstrap/cache', 'bootstrap/cache/packages.php', 'bootstrap/cache/services.php')
+                forbiddenPaths = @('.env', '.env.*', 'storage/**', 'public/**', '.deployment/**', '../**')
+                externalResourcesForbidden = @('shared-storage', 'live-release', 'deployment-metadata', 'file-permissions')
+            }
+            failureHandling = 'stop-no-retry-preserve-release-directory-for-diagnostics'
+            rollbackBehaviour = 'no-live-state-changed-no-rollback-triggered'
+            postValidation = [pscustomobject]@{
+                requiredChecks = @('VendorPresent', 'AutoloadPresent', 'ComposerExitCode', 'FilesChangedOnlyInsideRelease', 'UnexpectedFileChanges', 'UnexpectedDirectories', 'ScriptsExecuted', 'PluginsExecuted')
+                vendorPath = 'vendor'
+                autoloadPath = 'vendor/autoload.php'
+            }
+        }
+        timeoutPolicy = [pscustomobject]@{
+            preflightSeconds = 120
+            installSeconds = 600
+        }
+        environmentPolicy = [pscustomobject]@{
+            allowComposerHome = $false
+            allowComposerCache = $true
+            requireNoDev = $true
+            requireNoInteraction = $true
+        }
+    }
+}
+
 function Resolve-DeploymentStrategy {
     param(
         [Parameter(Mandatory = $true)][object] $ExecutionPlan,
@@ -397,9 +482,14 @@ function Resolve-DeploymentStrategy {
         New-DeploymentStrategyStep -StepId 'archive.create' -Sequence 300 -OperationType 'archive-create' -Actor 'automation' -ExecutionLocation 'local' -DependsOn @('artifact.prepare') -CommandGenerationRequired $true -CommandExecutionMode 'automatic' -InputReferences @('runtimeArtifact.stagingArea', 'adapterSelection.selectedAdapterId') -OutputReferences @('runtimeArtifact.archive') -Diagnostic "Create a deployment archive using the selected adapter format '$selectedAdapterId' in a later command generation phase."
         New-DeploymentStrategyStep -StepId 'deployment.approval' -Sequence 400 -OperationType 'deployment-approval' -Actor 'human-decision' -ExecutionLocation 'decision' -DependsOn @('archive.create') -CommandGenerationRequired $false -CommandExecutionMode 'none' -ApprovalRequired $true -InputReferences @('resolvedExecutionPlan.project', 'resolvedExecutionPlan.environment', 'adapterSelection.selectedAdapterId') -Diagnostic 'Central deployment approval is required before changing the target system.'
         New-DeploymentStrategyStep -StepId 'remote.release-directory.prepare' -Sequence 500 -OperationType 'release-directory-prepare' -Actor 'human-command' -ExecutionLocation 'remote' -DependsOn @('deployment.approval') -CommandGenerationRequired $true -CommandExecutionMode 'copy-and-run' -InputReferences @('resolvedExecutionPlan.environment') -Diagnostic 'Later command generation must provide a copyable remote preparation command.' -Feedback (New-DeploymentStrategyFeedback)
-        New-DeploymentStrategyStep -StepId 'remote.archive.upload' -Sequence 600 -OperationType 'archive-upload' -Actor 'human-command' -ExecutionLocation 'local-to-remote' -DependsOn @('remote.release-directory.prepare') -CommandGenerationRequired $true -CommandExecutionMode 'copy-and-run' -InputReferences @('runtimeArtifact.archive', 'resolvedExecutionPlan.environment') -OutputReferences @('remote.archive') -Diagnostic 'Later command generation must provide a copyable upload command.' -Feedback (New-DeploymentStrategyFeedback)
-        New-DeploymentStrategyStep -StepId 'remote.archive.extract' -Sequence 700 -OperationType 'archive-extract' -Actor 'human-command' -ExecutionLocation 'remote' -DependsOn @('remote.archive.upload') -CommandGenerationRequired $true -CommandExecutionMode 'copy-and-run' -InputReferences @('remote.archive', 'adapterSelection.selectedAdapterId') -OutputReferences @('remote.releaseDirectory') -Diagnostic "Later command generation must provide a copyable extraction command for adapter '$selectedAdapterId'." -Feedback (New-DeploymentStrategyFeedback)
-        New-DeploymentStrategyStep -StepId 'remote.application.finalize' -Sequence 800 -OperationType 'application-finalize' -Actor 'human-command' -ExecutionLocation 'remote' -DependsOn @('remote.archive.extract') -CommandGenerationRequired $true -CommandExecutionMode 'copy-and-run' -InputReferences @('resolvedExecutionPlan.steps', 'remote.releaseDirectory') -Diagnostic 'Later command generation must derive required application finalization operations from the resolved execution plan.' -Feedback (New-DeploymentStrategyFeedback)
+        New-DeploymentStrategyStep -StepId 'artifact.upload' -Sequence 600 -OperationType 'artifact-upload' -Actor 'human-command' -ExecutionLocation 'artifact-transport' -DependsOn @('remote.release-directory.prepare') -CommandGenerationRequired $true -CommandExecutionMode 'copy-and-run' -InputReferences @('runtimeArtifact.archive', 'artifactTransport.networkShare') -OutputReferences @('artifactTransport.uploadedArchive') -Diagnostic 'Later command generation must provide a copyable network-share artifact transport command.' -Feedback (New-DeploymentStrategyFeedback)
+        New-DeploymentStrategyStep -StepId 'remote.release.prepare' -Sequence 650 -OperationType 'release-prepare' -Actor 'human-command' -ExecutionLocation 'remote' -DependsOn @('artifact.upload') -CommandGenerationRequired $true -CommandExecutionMode 'copy-and-run' -InputReferences @('deploymentRunId', 'runtimeArtifact.artifactId', 'resolvedExecutionPlan.environment', 'resolvedExecutionPlan.executionPlanFingerprint') -OutputReferences @('remote.releaseDirectory') -Diagnostic 'Later command generation must provide a copyable remote release directory preparation command.' -Feedback (New-DeploymentStrategyFeedback)
+        New-DeploymentStrategyStep -StepId 'remote.archive.extract' -Sequence 700 -OperationType 'archive-extract' -Actor 'human-command' -ExecutionLocation 'remote' -DependsOn @('remote.release.prepare') -CommandGenerationRequired $true -CommandExecutionMode 'copy-and-run' -InputReferences @('artifactTransport.uploadedArchive', 'remote.releaseDirectory', 'adapterSelection.selectedAdapterId') -OutputReferences @('remote.extractedReleaseDirectory') -Diagnostic "Later command generation must provide a copyable extraction command for adapter '$selectedAdapterId'." -Feedback (New-DeploymentStrategyFeedback)
+        New-DeploymentStrategyStep -StepId 'remote.composer.preflight' -Sequence 750 -OperationType 'composer-preflight' -Actor 'human-command' -ExecutionLocation 'remote' -DependsOn @('remote.archive.extract') -CommandGenerationRequired $true -CommandExecutionMode 'copy-and-run' -InputReferences @('remote.releaseDirectory', 'composerStrategy') -OutputReferences @('remote.composerPreflight') -Diagnostic 'Later command generation must provide a copyable read-only Composer preflight command.' -Feedback (New-DeploymentStrategyFeedback)
+        New-DeploymentStrategyStep -StepId 'remote.composer.install' -Sequence 775 -OperationType 'composer-install' -Actor 'human-command' -ExecutionLocation 'remote' -DependsOn @('remote.composer.preflight') -CommandGenerationRequired $true -CommandExecutionMode 'copy-and-run' -InputReferences @('remote.releaseDirectory', 'composerStrategy', 'remote.composerPreflight') -OutputReferences @('remote.vendorDirectory', 'remote.composerInstallEvidence') -Diagnostic 'Composer install requires an explicit follow-up command after successful preflight.' -Feedback (New-DeploymentStrategyFeedback)
+        New-DeploymentStrategyStep -StepId 'remote.composer.install.validate' -Sequence 790 -OperationType 'composer-install-validate' -Actor 'human-command' -ExecutionLocation 'remote' -DependsOn @('remote.composer.install') -CommandGenerationRequired $true -CommandExecutionMode 'copy-and-run' -InputReferences @('remote.releaseDirectory', 'composerStrategy', 'remote.composerInstallEvidence') -OutputReferences @('remote.composerInstallValidation') -Diagnostic 'Read-only reconciliation validates the previous Composer install evidence without re-running Composer.' -Feedback (New-DeploymentStrategyFeedback)
+        New-DeploymentStrategyStep -StepId 'remote.shared-storage.prepare' -Sequence 795 -OperationType 'shared-storage-prepare' -Actor 'human-command' -ExecutionLocation 'remote' -DependsOn @('remote.composer.install.validate') -CommandGenerationRequired $true -CommandExecutionMode 'copy-and-run' -InputReferences @('resolvedExecutionPlan.environment.sharedStorage', 'remote.releaseDirectory', 'remote.composerInstallValidation') -OutputReferences @('remote.sharedStoragePreparation') -Diagnostic 'Prepare configured shared storage targets and release links conservatively after explicit approval.' -Feedback (New-DeploymentStrategyFeedback)
+        New-DeploymentStrategyStep -StepId 'remote.application.finalize' -Sequence 800 -OperationType 'application-finalize' -Actor 'human-command' -ExecutionLocation 'remote' -DependsOn @('remote.shared-storage.prepare') -CommandGenerationRequired $true -CommandExecutionMode 'copy-and-run' -InputReferences @('resolvedExecutionPlan.steps', 'remote.releaseDirectory', 'remote.sharedStoragePreparation') -Diagnostic 'Later command generation must derive required application finalization operations from the resolved execution plan.' -Feedback (New-DeploymentStrategyFeedback)
         New-DeploymentStrategyStep -StepId 'deployment.verify' -Sequence 900 -OperationType 'deployment-verify' -Actor 'review' -ExecutionLocation 'review' -DependsOn @('remote.application.finalize') -CommandGenerationRequired $false -CommandExecutionMode 'none' -InputReferences @('remote.commandResults') -Diagnostic 'Review required evidence from previous remote steps; success is not assumed automatically.'
     )
     $approvalStep = @($steps | Where-Object { $_.stepId -eq 'deployment.approval' } | Select-Object -First 1)[0]
@@ -411,9 +501,35 @@ function Resolve-DeploymentStrategy {
         selectedAdapterId = $selectedAdapterId
         strategy = [pscustomobject]@{
             executionModel = 'human-gated-automation'
-            sshExecutionMode = 'human-command'
+            artifactTransport = 'network-share'
+            remoteExecution = 'interactive-ssh'
             localAutomationPolicy = 'automatic-unless-decision-required'
         }
+        artifactTransport = [pscustomobject]@{
+            adapterId = 'network-share'
+            purpose = 'Transfer deployment artifacts through the configured project network share.'
+            containsRemoteCommands = $false
+        }
+        remoteExecution = [pscustomobject]@{
+            mode = 'interactive-ssh'
+            startsConnection = $false
+            readsConnectionContext = $false
+            derivesHostFromPrompt = $false
+        }
+        deploymentWorkspace = [pscustomobject]@{
+            baseDirectory = '.deployment'
+            uploadsDirectory = '.deployment/uploads'
+            workDirectory = '.deployment/work'
+            releasesDirectory = '.deployment/releases'
+            metadataDirectory = '.deployment/metadata'
+            rollback = [pscustomobject]@{
+                maxCompleteStates = 2
+                cleanupAfterSuccessfulFinalizationOnly = $true
+                preserveExistingStatesOnFailure = $true
+            }
+        }
+        composerStrategy = New-ComposerStrategyContract
+        sharedStorage = ($ExecutionPlan.environment.sharedStorage | ConvertTo-Json -Depth 30 | ConvertFrom-Json)
         steps = @($steps | Sort-Object sequence, stepId)
         humanGates = @((New-DeploymentStrategyApprovalGate -Sequence ([int] $approvalStep.sequence) -DependsOn @($approvalStep.dependsOn)))
         diagnostic = 'Deployment strategy is ready for later command generation.'

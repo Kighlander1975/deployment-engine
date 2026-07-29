@@ -101,9 +101,28 @@ function New-CompleteOutputMap {
     return $outputs
 }
 
+function New-TestTargetBinding {
+    param(
+        [string] $ExecutionPlanFingerprint = 'execution-plan-a',
+        [string] $TargetId = 'staging',
+        [string] $RemoteRoot = '/var/www/demo',
+        [string] $ApplicationPath = 'current',
+        [string] $ApplicationRemoteDirectory = '/var/www/demo/current'
+    )
+
+    return [pscustomobject]@{
+        executionPlanFingerprint = $ExecutionPlanFingerprint
+        targetId = $TargetId
+        remoteRoot = $RemoteRoot
+        applicationPath = $ApplicationPath
+        applicationRemoteDirectory = $ApplicationRemoteDirectory
+    }
+}
+
 $fixedNow = [datetime]::Parse('2026-07-26T12:00:00Z').ToUniversalTime()
-$plan = New-RemoteToolDiscoveryPlan -Platform linux -ProjectPath '/var/www/demo/current' -NowUtc $fixedNow
-$samePlanLater = New-RemoteToolDiscoveryPlan -Platform linux -ProjectPath '/var/www/demo/current' -NowUtc ([datetime]::Parse('2026-07-27T12:00:00Z').ToUniversalTime())
+$targetBinding = New-TestTargetBinding
+$plan = New-RemoteToolDiscoveryPlan -Platform linux -ProjectPath '/local/project/path' -TargetBinding $targetBinding -NowUtc $fixedNow
+$samePlanLater = New-RemoteToolDiscoveryPlan -Platform linux -ProjectPath '/local/project/path' -TargetBinding $targetBinding -NowUtc ([datetime]::Parse('2026-07-27T12:00:00Z').ToUniversalTime())
 
 Assert-Equal $plan.schemaVersion '0.1' 'Remote plan schema version must be stable.'
 Assert-Equal $plan.discoveryType 'remote' 'Remote plan must declare discovery type.'
@@ -115,21 +134,31 @@ Assert-Equal (@($plan.probes).Count) 19 'Remote plan must include expected probe
 Assert-Equal ((@($plan.probes) | Select-Object -First 1).probeId) 'remote.tool.php.location' 'Remote probe order must be deterministic.'
 Assert-Equal ((@($plan.probes) | Select-Object -Last 1).probeId) 'remote.project.deployment-project-json.exists' 'Remote probe order must include project probes deterministically.'
 Assert-Equal $plan.planFingerprint $samePlanLater.planFingerprint 'Plan timestamp must not affect fingerprint.'
+Assert-Equal $plan.targetBinding.applicationRemoteDirectory '/var/www/demo/current' 'Remote plan must carry target binding for project probes.'
 Assert-True ($plan.responseTemplate -match [regex]::Escape($plan.planFingerprint)) 'Response template must include plan fingerprint.'
 Assert-True (-not ($plan.responseTemplate -match 'php artisan')) 'Response template must not execute artisan.'
 $planJson = $plan | ConvertTo-Json -Depth 30
 
 Assert-True `
-    (-not ($planJson -match [regex]::Escape('/var/www/demo/current'))) `
-    'Remote plan must not contain the provided project path.'
+    (-not ($planJson -match [regex]::Escape('/local/project/path'))) `
+    'Remote plan must not contain the provided local project path.'
 
 $changedCore = [pscustomobject]@{
     schemaVersion = '0.1'
     discoveryType = 'remote'
     platform = 'linux'
+    targetBinding = $targetBinding
     probes = @($plan.probes | Select-Object -Skip 1)
 }
 Assert-True ((Get-RemoteDiscoveryPlanFingerprint -PlanCore $changedCore) -ne $plan.planFingerprint) 'Changed probe ids must change fingerprint.'
+$remoteRootChanged = New-RemoteToolDiscoveryPlan -Platform linux -TargetBinding (New-TestTargetBinding -RemoteRoot '/var/www/other' -ApplicationRemoteDirectory '/var/www/other/current') -NowUtc $fixedNow
+$applicationPathChanged = New-RemoteToolDiscoveryPlan -Platform linux -TargetBinding (New-TestTargetBinding -ApplicationPath 'other' -ApplicationRemoteDirectory '/var/www/demo/other') -NowUtc $fixedNow
+$remoteDirectoryChanged = New-RemoteToolDiscoveryPlan -Platform linux -TargetBinding (New-TestTargetBinding -ApplicationRemoteDirectory '/var/www/demo/manual-different') -NowUtc $fixedNow
+$targetIdChanged = New-RemoteToolDiscoveryPlan -Platform linux -TargetBinding (New-TestTargetBinding -TargetId 'production') -NowUtc $fixedNow
+Assert-True ($remoteRootChanged.planFingerprint -ne $plan.planFingerprint) 'Changing remoteRoot must change remote discovery fingerprint.'
+Assert-True ($applicationPathChanged.planFingerprint -ne $plan.planFingerprint) 'Changing applicationPath must change remote discovery fingerprint.'
+Assert-True ($remoteDirectoryChanged.planFingerprint -ne $plan.planFingerprint) 'Changing applicationRemoteDirectory must change remote discovery fingerprint.'
+Assert-True ($targetIdChanged.planFingerprint -ne $plan.planFingerprint) 'Changing targetId must change remote discovery fingerprint.'
 
 Assert-ThrowsLike -Script { New-RemoteToolDiscoveryPlan -Platform windows | Out-Null } -Pattern 'Unsupported remote discovery platform' -Message 'Unknown remote platform must be rejected.'
 Assert-ThrowsLike -Script { Get-RemoteDiscoveryProbeDefinition -Platform linux -ProbeId 'remote.unknown' | Out-Null } -Pattern 'Unknown remote discovery probe id' -Message 'Unknown remote probe id must be rejected.'

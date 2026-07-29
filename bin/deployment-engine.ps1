@@ -1,12 +1,14 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0, Mandatory = $true)]
-    [ValidateSet('plan', 'discover-projects', 'resolve-project', 'discover-tools', 'remote-discovery-plan', 'resolve-remote-discovery', 'assess-tool-inventories', 'evaluate-adapter-eligibility', 'select-adapter', 'build-deployment-strategy', 'generate-commands', 'create-command-session', 'update-command-session', 'evaluate-execution-admission', 'build-executor-request', 'execute-local-operation', 'build-automation-started-event', 'build-automation-result-event', 'create-runtime-directory', 'assess-clean-tree', 'orchestrate-local-execution', 'resume-local-execution')]
+    [ValidateSet('plan', 'discover-projects', 'resolve-project', 'discover-tools', 'remote-discovery-plan', 'resolve-remote-discovery', 'assess-tool-inventories', 'evaluate-adapter-eligibility', 'select-adapter', 'build-deployment-strategy', 'generate-commands', 'create-command-session', 'update-command-session', 'evaluate-execution-admission', 'build-executor-request', 'execute-local-operation', 'build-automation-started-event', 'build-automation-result-event', 'create-runtime-directory', 'assess-clean-tree', 'orchestrate-local-execution', 'resume-local-execution', 'build-runtime-artifact-reconciliation')]
     [string] $Command,
 
     [string] $Analysis,
 
     [string] $Manifest,
+
+    [string] $TargetPath,
 
     [string] $ProjectPath,
 
@@ -43,6 +45,22 @@ param(
     [string] $AdapterSelectionPath,
 
     [string] $DeploymentStrategyPath,
+
+    [string] $RuntimeArtifactPath,
+
+    [string] $PreviousRuntimeArtifactPath,
+
+    [string] $ReplacementRuntimeArtifactPath,
+
+    [string] $PackagingPolicyPath,
+
+    [string] $DeploymentRunId,
+
+    [string] $CurrentStep,
+
+    [string] $CurrentStatus,
+
+    [string] $ReconciledBy,
 
     [string] $CommandPlanPath,
 
@@ -117,8 +135,12 @@ switch ($Command) {
             throw "Missing required parameter for 'plan': -Manifest"
         }
 
+        if ([string]::IsNullOrWhiteSpace($TargetPath)) {
+            throw "Missing required parameter for 'plan': -TargetPath"
+        }
+
         $builderPath = Join-Path -Path $engineRoot -ChildPath 'src/ps1/Invoke-ExecutionPlanBuild.ps1'
-        & $builderPath -AnalysisPath $Analysis -ProjectManifestPath $Manifest -Format $planFormat -OutputPath $OutputPath
+        & $builderPath -AnalysisPath $Analysis -ProjectManifestPath $Manifest -TargetPath $TargetPath -Format $planFormat -OutputPath $OutputPath
         exit $LASTEXITCODE
     }
     'discover-tools' {
@@ -143,9 +165,12 @@ switch ($Command) {
         if ([string]::IsNullOrWhiteSpace($Platform)) {
             throw "Missing required parameter for 'remote-discovery-plan': -Platform"
         }
+        if ([string]::IsNullOrWhiteSpace($ExecutionPlanPath)) {
+            throw "Missing required parameter for 'remote-discovery-plan': -ExecutionPlanPath"
+        }
 
         $remotePlanPath = Join-Path -Path $engineRoot -ChildPath 'src/ps1/New-RemoteToolDiscoveryPlan.ps1'
-        & $remotePlanPath -Platform $Platform -ProjectPath $ProjectPath -Format Json -OutputPath $OutputPath
+        & $remotePlanPath -Platform $Platform -ProjectPath $ProjectPath -ExecutionPlanPath $ExecutionPlanPath -Format Json -OutputPath $OutputPath
         exit 0
     }
     'resolve-remote-discovery' {
@@ -244,7 +269,7 @@ switch ($Command) {
         }
 
         $commandPlanPath = Join-Path -Path $engineRoot -ChildPath 'src/ps1/Build-CommandPlan.ps1'
-        & $commandPlanPath -ExecutionPlanPath $ExecutionPlanPath -DeploymentStrategyPath $DeploymentStrategyPath -Format Json -OutputPath $OutputPath
+        & $commandPlanPath -ExecutionPlanPath $ExecutionPlanPath -DeploymentStrategyPath $DeploymentStrategyPath -RuntimeArtifactPath $RuntimeArtifactPath -PackagingPolicyPath $PackagingPolicyPath -DeploymentRunId $DeploymentRunId -Format Json -OutputPath $OutputPath
         exit 0
     }
     'create-command-session' {
@@ -427,7 +452,7 @@ switch ($Command) {
         }
 
         $orchestratorPath = Join-Path -Path $engineRoot -ChildPath 'src/ps1/Invoke-ExecutionOrchestrator.ps1'
-        & $orchestratorPath -CommandPlanPath $CommandPlanPath -SourceRepositoryPath $SourceRepositoryPath -RuntimeRootPath $RuntimeRootPath -MaxAutomationSteps $MaxAutomationSteps -Format Json -OutputPath $OutputPath
+        & $orchestratorPath -CommandPlanPath $CommandPlanPath -ExecutionPlanPath $ExecutionPlanPath -DeploymentStrategyPath $DeploymentStrategyPath -PackagingPolicyPath $PackagingPolicyPath -DeploymentRunId $DeploymentRunId -SourceRepositoryPath $SourceRepositoryPath -RuntimeRootPath $RuntimeRootPath -MaxAutomationSteps $MaxAutomationSteps -Format Json -OutputPath $OutputPath
         exit 0
     }
     'resume-local-execution' {
@@ -449,6 +474,26 @@ switch ($Command) {
         $resumeJson
         $resumeResult = $resumeJson | ConvertFrom-Json
         if ($resumeResult.status -eq 'rejected') { exit 1 }
+        exit 0
+    }
+    'build-runtime-artifact-reconciliation' {
+        if ([string]::IsNullOrWhiteSpace($Format)) {
+            $Format = 'Json'
+        }
+        if ($Format -ne 'Json') {
+            throw "build-runtime-artifact-reconciliation only supports -Format Json."
+        }
+        foreach ($required in @('DeploymentRunId', 'ExecutionPlanPath', 'Manifest', 'PreviousRuntimeArtifactPath', 'ReplacementRuntimeArtifactPath', 'PackagingPolicyPath')) {
+            if ([string]::IsNullOrWhiteSpace((Get-Variable -Name $required -ValueOnly))) {
+                throw "Missing required parameter for 'build-runtime-artifact-reconciliation': -$required"
+            }
+        }
+        if ([string]::IsNullOrWhiteSpace($CurrentStep)) { $CurrentStep = 'remote.archive.extract' }
+        if ([string]::IsNullOrWhiteSpace($CurrentStatus)) { $CurrentStatus = 'WaitingForHuman' }
+        if ([string]::IsNullOrWhiteSpace($ReconciledBy)) { $ReconciledBy = 'Codex' }
+
+        $reconciliationPath = Join-Path -Path $engineRoot -ChildPath 'src/ps1/Build-RuntimeArtifactReconciliation.ps1'
+        & $reconciliationPath -DeploymentRunId $DeploymentRunId -ExecutionPlanPath $ExecutionPlanPath -ProjectManifestPath $Manifest -PreviousRuntimeArtifactPath $PreviousRuntimeArtifactPath -ReplacementRuntimeArtifactPath $ReplacementRuntimeArtifactPath -PackagingPolicyPath $PackagingPolicyPath -CurrentStep $CurrentStep -CurrentStatus $CurrentStatus -ReconciledBy $ReconciledBy -Format Json -OutputPath $OutputPath
         exit 0
     }
 }

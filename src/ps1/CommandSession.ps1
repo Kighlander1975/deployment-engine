@@ -81,7 +81,7 @@ function Assert-CommandSessionStatus {
 
 function Test-CommandSessionSecretLike {
     param([string] $Text)
-    return (-not [string]::IsNullOrEmpty($Text) -and $Text -match '(?i)(password=|token=|private key|BEGIN OPENSSH PRIVATE KEY|\.env|api[_-]?key|client[_-]?secret)')
+    return (-not [string]::IsNullOrEmpty($Text) -and $Text -match '(?i)(password=|token=|private key|BEGIN OPENSSH PRIVATE KEY|api[_-]?key|client[_-]?secret)')
 }
 
 function Assert-NoCommandSessionSecrets {

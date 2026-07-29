@@ -63,8 +63,8 @@ function New-TestCommandPlan {
         commands = @(
             New-TestCommand -Id 'source.validate' -Sequence 100 -Actor 'automation' -Location 'local' -Mode 'automatic' -Program 'local-operation'
             New-TestCommand -Id 'archive.create' -Sequence 300 -Actor 'automation' -Location 'local' -Mode 'automatic' -Program 'local-operation' -DependsOn @('source.validate')
-            New-TestCommand -Id 'remote.archive.upload' -Sequence 600 -Actor 'human-command' -Location 'local-to-remote' -Mode 'copy-and-run' -Program 'scp' -DependsOn @('deployment.approval') -RenderedCommand 'scp artifact deploy@example.org:/absolute/artifact.zip'
-            New-TestCommand -Id 'remote.archive.extract' -Sequence 700 -Actor 'human-command' -Location 'remote' -Mode 'copy-and-run' -Program 'ssh' -DependsOn @('remote.archive.upload') -RenderedCommand 'ssh deploy@example.org extract-zip /absolute/artifact.zip /absolute/release'
+            New-TestCommand -Id 'artifact.upload' -Sequence 600 -Actor 'human-command' -Location 'artifact-transport' -Mode 'copy-and-run' -Program 'network-share' -DependsOn @('deployment.approval') -RenderedCommand 'Copy-Item -LiteralPath artifact.zip -Destination D:\\Share\\.deployment\\uploads\\artifact.zip'
+            New-TestCommand -Id 'remote.archive.extract' -Sequence 700 -Actor 'human-command' -Location 'remote' -Mode 'copy-and-run' -Program 'interactive-ssh' -DependsOn @('artifact.upload') -RenderedCommand 'unzip -oq /absolute/.deployment/uploads/artifact.zip -d /absolute/.deployment/work/current'
             New-TestCommand -Id 'deployment.verify' -Sequence 900 -Actor 'review' -Location 'review' -Mode 'none' -Program 'local-operation' -DependsOn @('remote.archive.extract')
         )
         humanGates = @(
@@ -166,13 +166,13 @@ Assert-Equal $humanUploadAdmission.status 'requires-human' 'SCP human command mu
 Assert-Equal $humanUploadAdmission.handoff.type 'human-command' 'Human command handoff must be declared.'
 Assert-Equal $humanUploadAdmission.handoff.eventOnStart 'human-command-started' 'Human command handoff must declare start event.'
 Assert-Equal $humanUploadAdmission.handoff.eventOnResult 'human-command-result' 'Human command handoff must declare result event.'
-Assert-Equal $humanUploadAdmission.handoff.renderedCommand 'scp artifact deploy@example.org:/absolute/artifact.zip' 'Rendered command must be carried, not regenerated.'
+Assert-Equal $humanUploadAdmission.handoff.RenderedCommand 'Copy-Item -LiteralPath artifact.zip -Destination D:\\Share\\.deployment\\uploads\\artifact.zip' 'Rendered command must be carried, not regenerated.'
 
-$uploadStarted = Apply-CommandSessionEvent -CommandSession $afterApproval -Event (New-Event -Id 'upload-start' -Type 'human-command-started' -Target 'remote.archive.upload' -Payload $null)
-$afterUpload = Apply-CommandSessionEvent -CommandSession $uploadStarted -Event (New-Event -Id 'upload-result' -Type 'human-command-result' -Target 'remote.archive.upload' -Payload ([pscustomobject]@{ result = [pscustomobject]@{ exitStatus = 0; stdout = 'ok'; stderr = '' } }))
+$uploadStarted = Apply-CommandSessionEvent -CommandSession $afterApproval -Event (New-Event -Id 'upload-start' -Type 'human-command-started' -Target 'artifact.upload' -Payload $null)
+$afterUpload = Apply-CommandSessionEvent -CommandSession $uploadStarted -Event (New-Event -Id 'upload-result' -Type 'human-command-result' -Target 'artifact.upload' -Payload ([pscustomobject]@{ result = [pscustomobject]@{ exitStatus = 0; stdout = 'ok'; stderr = '' } }))
 $humanExtractAdmission = Resolve-ExecutionAdmission -CommandPlan $plan -CommandSession $afterUpload
 Assert-Equal $humanExtractAdmission.status 'requires-human' 'SSH human command must require human handling.'
-Assert-Equal $humanExtractAdmission.handoff.renderedCommand 'ssh deploy@example.org extract-zip /absolute/artifact.zip /absolute/release' 'SSH command text must only be referenced.'
+Assert-Equal $humanExtractAdmission.handoff.RenderedCommand 'unzip -oq /absolute/.deployment/uploads/artifact.zip -d /absolute/.deployment/work/current' 'SSH command text must only be referenced.'
 
 $extractStarted = Apply-CommandSessionEvent -CommandSession $afterUpload -Event (New-Event -Id 'extract-start' -Type 'human-command-started' -Target 'remote.archive.extract' -Payload $null)
 $afterExtract = Apply-CommandSessionEvent -CommandSession $extractStarted -Event (New-Event -Id 'extract-result' -Type 'human-command-result' -Target 'remote.archive.extract' -Payload ([pscustomobject]@{ result = [pscustomobject]@{ exitStatus = 0; stdout = 'ok'; stderr = '' } }))
@@ -183,7 +183,7 @@ Assert-Equal $reviewAdmission.handoff.eventOnSubmit 'review-result' 'Review hand
 
 $completedSession = Apply-CommandSessionEvent -CommandSession $afterExtract -Event (New-Event -Id 'review-ok' -Type 'review-result' -Target 'deployment.verify' -Payload ([pscustomobject]@{ review = [pscustomobject]@{ status = 'approved'; diagnostic = '' } }))
 Assert-Equal (Resolve-ExecutionAdmission -CommandPlan $plan -CommandSession $completedSession).status 'completed' 'Completed session must report completed.'
-$failedSession = Apply-CommandSessionEvent -CommandSession $uploadStarted -Event (New-Event -Id 'upload-fail' -Type 'human-command-result' -Target 'remote.archive.upload' -Payload ([pscustomobject]@{ result = [pscustomobject]@{ exitStatus = 1; stdout = ''; stderr = 'failed' } }))
+$failedSession = Apply-CommandSessionEvent -CommandSession $uploadStarted -Event (New-Event -Id 'upload-fail' -Type 'human-command-result' -Target 'artifact.upload' -Payload ([pscustomobject]@{ result = [pscustomobject]@{ exitStatus = 1; stdout = ''; stderr = 'failed' } }))
 Assert-Equal (Resolve-ExecutionAdmission -CommandPlan $plan -CommandSession $failedSession).status 'failed' 'Failed session must report failed.'
 $cancelledSession = Apply-CommandSessionEvent -CommandSession $session -Event ([pscustomobject]@{ schemaVersion = '0.1'; eventId = 'cancel-event'; eventType = 'session-cancelled' })
 Assert-Equal (Resolve-ExecutionAdmission -CommandPlan $plan -CommandSession $cancelledSession).status 'cancelled' 'Cancelled session must report cancelled.'
@@ -191,7 +191,7 @@ $cancelledWithFakeAutomationCompletion = Copy-ExecutionAdmissionObject -Value $c
 (Get-ItemById -Session $cancelledWithFakeAutomationCompletion -ItemId 'source.validate').status = 'completed'
 Assert-ThrowsLike -Script { Resolve-ExecutionAdmission -CommandPlan $plan -CommandSession $cancelledWithFakeAutomationCompletion | Out-Null } -Pattern 'completed automation item requires successful automation-result' -Message 'Cancelled session must still reject completed automation without start/result history.'
 $cancelledWithFakeHumanCompletion = Copy-ExecutionAdmissionObject -Value $cancelledSession
-(Get-ItemById -Session $cancelledWithFakeHumanCompletion -ItemId 'remote.archive.upload').status = 'completed'
+(Get-ItemById -Session $cancelledWithFakeHumanCompletion -ItemId 'artifact.upload').status = 'completed'
 Assert-ThrowsLike -Script { Resolve-ExecutionAdmission -CommandPlan $plan -CommandSession $cancelledWithFakeHumanCompletion | Out-Null } -Pattern 'completed human-command item requires exitStatus 0' -Message 'Cancelled session must still reject completed human command without start/result history.'
 $cancelledAfterCompletedAutomation = Apply-CommandSessionEvent -CommandSession (Complete-Automation -Session $session -ItemId 'source.validate' -Prefix 'cancel-after-completed-source') -Event ([pscustomobject]@{ schemaVersion = '0.1'; eventId = 'cancel-after-completed'; eventType = 'session-cancelled' })
 Assert-Equal (Resolve-ExecutionAdmission -CommandPlan $plan -CommandSession $cancelledAfterCompletedAutomation).status 'cancelled' 'Cancelled session with previously valid completed item must remain valid.'
@@ -207,7 +207,7 @@ $sequenceMismatch = Copy-ExecutionAdmissionObject -Value $session
 (Get-ItemById -Session $sequenceMismatch -ItemId 'source.validate').sequence = 101
 Assert-Equal (Resolve-ExecutionAdmission -CommandPlan $plan -CommandSession $sequenceMismatch).status 'inconsistent' 'Sequence mismatch must be inconsistent.'
 $dependencyMismatch = Copy-ExecutionAdmissionObject -Value $afterApproval
-(Get-ItemById -Session $dependencyMismatch -ItemId 'remote.archive.upload').dependsOn = @('archive.create')
+(Get-ItemById -Session $dependencyMismatch -ItemId 'artifact.upload').dependsOn = @('archive.create')
 Assert-Equal (Resolve-ExecutionAdmission -CommandPlan $plan -CommandSession $dependencyMismatch).status 'inconsistent' 'Dependency mismatch must be inconsistent.'
 $missingCommandId = Copy-ExecutionAdmissionObject -Value $session
 (Get-ItemById -Session $missingCommandId -ItemId 'source.validate').commandId = 'missing'
@@ -228,10 +228,10 @@ Assert-Equal $remoteAdmission.status 'blocked' 'Remote automation must never be 
 Assert-Equal $remoteAdmission.decision.executionEligible $false 'Remote automation must not be eligible.'
 
 $laterActorMismatch = Copy-ExecutionAdmissionObject -Value $session
-(Get-ItemById -Session $laterActorMismatch -ItemId 'remote.archive.upload').actor = 'automation'
+(Get-ItemById -Session $laterActorMismatch -ItemId 'artifact.upload').actor = 'automation'
 Assert-Inconsistent -CommandPlan $plan -CommandSession $laterActorMismatch -Message 'Actor mismatch outside currentItemId must block every admission.'
 $laterSequenceMismatch = Copy-ExecutionAdmissionObject -Value $session
-(Get-ItemById -Session $laterSequenceMismatch -ItemId 'remote.archive.upload').sequence = 601
+(Get-ItemById -Session $laterSequenceMismatch -ItemId 'artifact.upload').sequence = 601
 Assert-Inconsistent -CommandPlan $plan -CommandSession $laterSequenceMismatch -Message 'Sequence mismatch outside currentItemId must block every admission.'
 $laterDependencyMismatch = Copy-ExecutionAdmissionObject -Value $session
 (Get-ItemById -Session $laterDependencyMismatch -ItemId 'remote.archive.extract').dependsOn = @('deployment.approval')
@@ -240,21 +240,21 @@ $laterModeMismatch = Copy-ExecutionAdmissionObject -Value $session
 (Get-ItemById -Session $laterModeMismatch -ItemId 'remote.archive.extract').executionMode = 'automatic'
 Assert-Inconsistent -CommandPlan $plan -CommandSession $laterModeMismatch -Message 'Execution mode mismatch outside currentItemId must block every admission.'
 $laterRenderedMismatch = Copy-ExecutionAdmissionObject -Value $session
-(Get-ItemById -Session $laterRenderedMismatch -ItemId 'remote.archive.upload').renderedCommand = 'scp changed'
+(Get-ItemById -Session $laterRenderedMismatch -ItemId 'artifact.upload').renderedCommand = 'Copy-Item changed'
 Assert-Inconsistent -CommandPlan $plan -CommandSession $laterRenderedMismatch -Message 'Rendered command mismatch outside currentItemId must block every admission.'
 $laterFeedbackMismatch = Copy-ExecutionAdmissionObject -Value $session
-(Get-ItemById -Session $laterFeedbackMismatch -ItemId 'remote.archive.upload').feedbackRequired = $false
+(Get-ItemById -Session $laterFeedbackMismatch -ItemId 'artifact.upload').feedbackRequired = $false
 Assert-Inconsistent -CommandPlan $plan -CommandSession $laterFeedbackMismatch -Message 'Feedback requirement mismatch outside currentItemId must block every admission.'
 $missingExpectedSessionItem = Copy-ExecutionAdmissionObject -Value $session
 $missingExpectedSessionItem.items = @($missingExpectedSessionItem.items | Where-Object { $_.itemId -ne 'remote.archive.extract' })
-(Get-ItemById -Session $missingExpectedSessionItem -ItemId 'deployment.verify').dependsOn = @('remote.archive.upload')
+(Get-ItemById -Session $missingExpectedSessionItem -ItemId 'deployment.verify').dependsOn = @('artifact.upload')
 Assert-Inconsistent -CommandPlan $plan -CommandSession $missingExpectedSessionItem -Message 'Missing expected session item must block every admission.'
 $extraSessionItem = Copy-ExecutionAdmissionObject -Value $session
 $extraSessionItem.items += [pscustomobject]@{ itemId = 'unexpected.item'; commandId = 'unexpected.item'; sequence = 999; actor = 'automation'; executionMode = 'automatic'; dependsOn = @(); status = 'pending'; attempt = 0; renderedCommand = ''; feedbackRequired = $false; feedback = $null; decision = $null; diagnostic = '' }
 Assert-Inconsistent -CommandPlan $plan -CommandSession $extraSessionItem -Message 'Additional unknown session item must block every admission.'
 $missingGateSession = Copy-ExecutionAdmissionObject -Value $session
 $missingGateSession.items = @($missingGateSession.items | Where-Object { $_.itemId -ne 'deployment.approval' })
-(Get-ItemById -Session $missingGateSession -ItemId 'remote.archive.upload').dependsOn = @('archive.create')
+(Get-ItemById -Session $missingGateSession -ItemId 'artifact.upload').dependsOn = @('archive.create')
 Assert-Inconsistent -CommandPlan $plan -CommandSession $missingGateSession -Message 'Missing human gate item must block every admission.'
 $wrongGateSession = Copy-ExecutionAdmissionObject -Value $session
 (Get-ItemById -Session $wrongGateSession -ItemId 'deployment.approval').gate.gateType = 'wrong'
@@ -264,7 +264,7 @@ $eventUnknownTarget = Copy-ExecutionAdmissionObject -Value $session
 $eventUnknownTarget.eventHistory = @(New-HistoryEvent -Id 'bad-target' -Type 'automation-started' -Target 'missing')
 Assert-ThrowsLike -Script { Resolve-ExecutionAdmission -CommandPlan $plan -CommandSession $eventUnknownTarget | Out-Null } -Pattern "targets unknown item 'missing'" -Message 'Unknown event target must be rejected.'
 $automationTargetsHuman = Copy-ExecutionAdmissionObject -Value $afterApproval
-$automationTargetsHuman.eventHistory += New-HistoryEvent -Id 'bad-auto-human' -Type 'automation-started' -Target 'remote.archive.upload'
+$automationTargetsHuman.eventHistory += New-HistoryEvent -Id 'bad-auto-human' -Type 'automation-started' -Target 'artifact.upload'
 Assert-ThrowsLike -Script { Resolve-ExecutionAdmission -CommandPlan $plan -CommandSession $automationTargetsHuman | Out-Null } -Pattern "does not match actor 'human-command'" -Message 'Automation event targeting human command must be rejected.'
 $humanTargetsAutomation = Copy-ExecutionAdmissionObject -Value $session
 $humanTargetsAutomation.eventHistory = @(New-HistoryEvent -Id 'bad-human-auto' -Type 'human-command-started' -Target 'source.validate')
@@ -280,14 +280,14 @@ $automationResultWithoutStart = Copy-ExecutionAdmissionObject -Value $session
 $automationResultWithoutStart.eventHistory = @(New-HistoryEvent -Id 'auto-result-only' -Type 'automation-result' -Target 'source.validate' -ResultingStatus 'completed' -Payload ([pscustomobject]@{ result = [pscustomobject]@{ status = 'completed' } }))
 Assert-ThrowsLike -Script { Resolve-ExecutionAdmission -CommandPlan $plan -CommandSession $automationResultWithoutStart | Out-Null } -Pattern 'requires a prior automation-started' -Message 'Automation result without start must be rejected.'
 $humanResultWithoutStart = Copy-ExecutionAdmissionObject -Value $afterApproval
-$humanResultWithoutStart.eventHistory += New-HistoryEvent -Id 'human-result-only' -Type 'human-command-result' -Target 'remote.archive.upload' -ResultingStatus 'completed' -Payload ([pscustomobject]@{ result = [pscustomobject]@{ exitStatus = 0; stdout = ''; stderr = '' } })
+$humanResultWithoutStart.eventHistory += New-HistoryEvent -Id 'human-result-only' -Type 'human-command-result' -Target 'artifact.upload' -ResultingStatus 'completed' -Payload ([pscustomobject]@{ result = [pscustomobject]@{ exitStatus = 0; stdout = ''; stderr = '' } })
 Assert-ThrowsLike -Script { Resolve-ExecutionAdmission -CommandPlan $plan -CommandSession $humanResultWithoutStart | Out-Null } -Pattern 'requires a prior human-command-started' -Message 'Human command result without start must be rejected.'
 $duplicateAutomationStart = Copy-ExecutionAdmissionObject -Value $sourceStarted
 $duplicateAutomationStart = Apply-CommandSessionEvent -CommandSession $session -Event (New-Event -Id 'dup-auto-start-a' -Type 'automation-started' -Target 'source.validate' -Payload $null)
 $duplicateAutomationStart.eventHistory += New-HistoryEvent -Id 'dup-auto-start-b' -Type 'automation-started' -Target 'source.validate' -ResultingStatus 'running'
 Assert-ThrowsLike -Script { Resolve-ExecutionAdmission -CommandPlan $plan -CommandSession $duplicateAutomationStart | Out-Null } -Pattern 'duplicate automation-started' -Message 'Duplicate automation start must be rejected.'
 $duplicateHumanResult = Copy-ExecutionAdmissionObject -Value $afterUpload
-$duplicateHumanResult.eventHistory += New-HistoryEvent -Id 'dup-human-result' -Type 'human-command-result' -Target 'remote.archive.upload' -ResultingStatus 'completed' -Payload ([pscustomobject]@{ result = [pscustomobject]@{ exitStatus = 0; stdout = ''; stderr = '' } })
+$duplicateHumanResult.eventHistory += New-HistoryEvent -Id 'dup-human-result' -Type 'human-command-result' -Target 'artifact.upload' -ResultingStatus 'completed' -Payload ([pscustomobject]@{ result = [pscustomobject]@{ exitStatus = 0; stdout = ''; stderr = '' } })
 Assert-ThrowsLike -Script { Resolve-ExecutionAdmission -CommandPlan $plan -CommandSession $duplicateHumanResult | Out-Null } -Pattern 'appears after terminal event' -Message 'Duplicate human result after terminal item must be rejected.'
 $eventAfterCancel = Copy-ExecutionAdmissionObject -Value $cancelledSession
 $eventAfterCancel.eventHistory += New-HistoryEvent -Id 'after-cancel' -Type 'automation-started' -Target 'source.validate' -ResultingStatus 'running'
@@ -307,12 +307,12 @@ $completedWithoutResult = Copy-ExecutionAdmissionObject -Value $session
 (Get-ItemById -Session $completedWithoutResult -ItemId 'source.validate').status = 'completed'
 Assert-ThrowsLike -Script { Resolve-ExecutionAdmission -CommandPlan $plan -CommandSession $completedWithoutResult | Out-Null } -Pattern 'completed automation item requires successful automation-result' -Message 'Completed automation without result must be rejected.'
 $completedHumanFailedExit = Copy-ExecutionAdmissionObject -Value $failedSession
-(Get-ItemById -Session $completedHumanFailedExit -ItemId 'remote.archive.upload').status = 'completed'
+(Get-ItemById -Session $completedHumanFailedExit -ItemId 'artifact.upload').status = 'completed'
 Assert-ThrowsLike -Script { Resolve-ExecutionAdmission -CommandPlan $plan -CommandSession $completedHumanFailedExit | Out-Null } -Pattern 'completed human-command item requires exitStatus 0' -Message 'Completed human command with failed exit must be rejected.'
 $failedHumanZeroExit = Copy-ExecutionAdmissionObject -Value $afterUpload
 $failedHumanZeroExit.status = 'failed'
-(Get-ItemById -Session $failedHumanZeroExit -ItemId 'remote.archive.upload').status = 'failed'
-(Get-ItemById -Session $failedHumanZeroExit -ItemId 'remote.archive.upload').feedback.stderr = 'fatal text'
+(Get-ItemById -Session $failedHumanZeroExit -ItemId 'artifact.upload').status = 'failed'
+(Get-ItemById -Session $failedHumanZeroExit -ItemId 'artifact.upload').feedback.stderr = 'fatal text'
 Assert-ThrowsLike -Script { Resolve-ExecutionAdmission -CommandPlan $plan -CommandSession $failedHumanZeroExit | Out-Null } -Pattern 'failed human-command item requires non-zero exitStatus' -Message 'Failed human command with exitStatus 0 must be rejected.'
 $readyWithStart = Copy-ExecutionAdmissionObject -Value $sourceStarted
 (Get-ItemById -Session $readyWithStart -ItemId 'source.validate').status = 'ready'
@@ -326,28 +326,28 @@ $automationCompletedWithHumanEvents = Copy-ExecutionAdmissionObject -Value $sess
 $automationCompletedWithHumanEvents.eventHistory = @(New-HistoryEvent -Id 'wrong-start' -Type 'human-command-started' -Target 'source.validate' -ResultingStatus 'running'; New-HistoryEvent -Id 'wrong-result' -Type 'human-command-result' -Target 'source.validate' -ResultingStatus 'completed' -Payload ([pscustomobject]@{ result = [pscustomobject]@{ exitStatus = 0; stdout = ''; stderr = '' } }))
 Assert-ThrowsLike -Script { Resolve-ExecutionAdmission -CommandPlan $plan -CommandSession $automationCompletedWithHumanEvents | Out-Null } -Pattern "does not match actor 'automation'" -Message 'Completed automation item with human command events must be rejected.'
 $humanCompletedWithAutomationEvents = Copy-ExecutionAdmissionObject -Value $afterApproval
-(Get-ItemById -Session $humanCompletedWithAutomationEvents -ItemId 'remote.archive.upload').status = 'completed'
-$humanCompletedWithAutomationEvents.eventHistory += @(New-HistoryEvent -Id 'wrong-auto-start' -Type 'automation-started' -Target 'remote.archive.upload' -ResultingStatus 'running'; New-HistoryEvent -Id 'wrong-auto-result' -Type 'automation-result' -Target 'remote.archive.upload' -ResultingStatus 'completed' -Payload ([pscustomobject]@{ result = [pscustomobject]@{ status = 'completed' } }))
+(Get-ItemById -Session $humanCompletedWithAutomationEvents -ItemId 'artifact.upload').status = 'completed'
+$humanCompletedWithAutomationEvents.eventHistory += @(New-HistoryEvent -Id 'wrong-auto-start' -Type 'automation-started' -Target 'artifact.upload' -ResultingStatus 'running'; New-HistoryEvent -Id 'wrong-auto-result' -Type 'automation-result' -Target 'artifact.upload' -ResultingStatus 'completed' -Payload ([pscustomobject]@{ result = [pscustomobject]@{ status = 'completed' } }))
 Assert-ThrowsLike -Script { Resolve-ExecutionAdmission -CommandPlan $plan -CommandSession $humanCompletedWithAutomationEvents | Out-Null } -Pattern "does not match actor 'human-command'" -Message 'Completed human-command item with automation events must be rejected.'
 
 $missingExitStatus = Copy-ExecutionAdmissionObject -Value $uploadStarted
-$missingExitStatus.eventHistory += New-HistoryEvent -Id 'missing-exit' -Type 'human-command-result' -Target 'remote.archive.upload' -ResultingStatus 'completed' -Payload ([pscustomobject]@{ result = [pscustomobject]@{ stdout = ''; stderr = '' } })
+$missingExitStatus.eventHistory += New-HistoryEvent -Id 'missing-exit' -Type 'human-command-result' -Target 'artifact.upload' -ResultingStatus 'completed' -Payload ([pscustomobject]@{ result = [pscustomobject]@{ stdout = ''; stderr = '' } })
 Assert-ThrowsLike -Script { Resolve-ExecutionAdmission -CommandPlan $plan -CommandSession $missingExitStatus | Out-Null } -Pattern "field 'exitStatus' must be an integer|missing required field 'exitStatus'" -Message 'Human command result must require exitStatus.'
 $nonIntegerExitStatus = Copy-ExecutionAdmissionObject -Value $uploadStarted
-$nonIntegerExitStatus.eventHistory += New-HistoryEvent -Id 'bad-exit' -Type 'human-command-result' -Target 'remote.archive.upload' -ResultingStatus 'failed' -Payload ([pscustomobject]@{ result = [pscustomobject]@{ exitStatus = 'nope'; stdout = ''; stderr = '' } })
+$nonIntegerExitStatus.eventHistory += New-HistoryEvent -Id 'bad-exit' -Type 'human-command-result' -Target 'artifact.upload' -ResultingStatus 'failed' -Payload ([pscustomobject]@{ result = [pscustomobject]@{ exitStatus = 'nope'; stdout = ''; stderr = '' } })
 Assert-ThrowsLike -Script { Resolve-ExecutionAdmission -CommandPlan $plan -CommandSession $nonIntegerExitStatus | Out-Null } -Pattern "field 'exitStatus' must be an integer" -Message 'Human command result must reject non-integer exitStatus.'
 Assert-Equal (Resolve-ExecutionAdmission -CommandPlan $plan -CommandSession $afterUpload).requirements.dependenciesCompleted $true 'exitStatus 0 must be treated as technically successful.'
 $failedWithPositiveStdout = Copy-ExecutionAdmissionObject -Value $failedSession
-(Get-ItemById -Session $failedWithPositiveStdout -ItemId 'remote.archive.upload').feedback.stdout = 'success'
+(Get-ItemById -Session $failedWithPositiveStdout -ItemId 'artifact.upload').feedback.stdout = 'success'
 Assert-Equal (Resolve-ExecutionAdmission -CommandPlan $plan -CommandSession $failedWithPositiveStdout).status 'failed' 'Positive stdout must not override failed exitStatus.'
 $completedWithErrorStderr = Copy-ExecutionAdmissionObject -Value $afterUpload
-(Get-ItemById -Session $completedWithErrorStderr -ItemId 'remote.archive.upload').feedback.stderr = 'fatal error text'
+(Get-ItemById -Session $completedWithErrorStderr -ItemId 'artifact.upload').feedback.stderr = 'fatal error text'
 Assert-Equal (Resolve-ExecutionAdmission -CommandPlan $plan -CommandSession $completedWithErrorStderr).status 'requires-human' 'Error stderr must not override exitStatus 0.'
 
 Assert-Equal (Resolve-ExecutionAdmission -CommandPlan $plan -CommandSession $afterApproval).requirements.humanApprovalSatisfied $true 'Approved gate must satisfy human approval.'
 Assert-Equal (Resolve-ExecutionAdmission -CommandPlan $plan -CommandSession $session).requirements.humanApprovalSatisfied $true 'Item without human gate dependency must have humanApprovalSatisfied true.'
 $openGateUpload = Copy-ExecutionAdmissionObject -Value $approvalSession
-$openGateUpload.currentItemId = 'remote.archive.upload'
+$openGateUpload.currentItemId = 'artifact.upload'
 Assert-Equal (Resolve-ExecutionAdmission -CommandPlan $plan -CommandSession $openGateUpload).requirements.humanApprovalSatisfied $false 'Open gate must not satisfy human approval.'
 $rejectedGate = Apply-CommandSessionEvent -CommandSession $approvalSession -Event (New-Event -Id 'approval-rejected' -Type 'human-decision-submitted' -Target 'deployment.approval' -Payload ([pscustomobject]@{ decision = [pscustomobject]@{ value = 'rejected' } }))
 Assert-Equal (Resolve-ExecutionAdmission -CommandPlan $plan -CommandSession $rejectedGate).requirements.humanApprovalSatisfied $false 'Rejected gate must not satisfy human approval.'
@@ -372,11 +372,11 @@ $customGatePlan = New-TestCommandPlan
 $customGatePlan.humanGates[0].gateId = 'production.release.confirmation'
 $customGatePlan.humanGates[0].stepId = 'production.release.confirmation'
 $customGatePlan.commands[2].dependsOn = @('production.release.confirmation')
-$customGatePlan.commands[3].dependsOn = @('remote.archive.upload')
+$customGatePlan.commands[3].dependsOn = @('artifact.upload')
 $customGateSession = New-CommandSession -CommandPlan $customGatePlan
 $customGateReady = Complete-Automation -Session (Complete-Automation -Session $customGateSession -ItemId 'source.validate' -Prefix 'custom-source') -ItemId 'archive.create' -Prefix 'custom-archive'
 $customOpenUpload = Copy-ExecutionAdmissionObject -Value $customGateReady
-$customOpenUpload.currentItemId = 'remote.archive.upload'
+$customOpenUpload.currentItemId = 'artifact.upload'
 Assert-Equal (Resolve-ExecutionAdmission -CommandPlan $customGatePlan -CommandSession $customOpenUpload).requirements.humanApprovalSatisfied $false 'Custom open gate must be discovered without hardcoded ID.'
 $customApproved = Apply-CommandSessionEvent -CommandSession $customGateReady -Event (New-Event -Id 'custom-approval' -Type 'human-decision-submitted' -Target 'production.release.confirmation' -Payload ([pscustomobject]@{ decision = [pscustomobject]@{ value = 'approved' } }))
 Assert-Equal (Resolve-ExecutionAdmission -CommandPlan $customGatePlan -CommandSession $customApproved).requirements.humanApprovalSatisfied $true 'Custom approved gate must satisfy approval without hardcoded ID.'

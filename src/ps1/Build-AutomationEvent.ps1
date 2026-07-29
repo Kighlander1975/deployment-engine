@@ -75,7 +75,7 @@ function Assert-AutomationEventInteger {
 function Test-AutomationEventSecretText {
     param([string] $Text)
     if ([string]::IsNullOrWhiteSpace($Text)) { return $false }
-    return ($Text -match '(?i)(password=|token=|private key|BEGIN OPENSSH PRIVATE KEY|\.env|api[_-]?key|client[_-]?secret)')
+    return ($Text -match '(?i)(password=|token=|private key|BEGIN OPENSSH PRIVATE KEY|api[_-]?key|client[_-]?secret)')
 }
 
 function Assert-AutomationEventNoSecrets {
@@ -221,9 +221,32 @@ function Build-AutomationStartedEvent {
 function Copy-AutomationResultArtifacts {
     param([Parameter(Mandatory = $true)][object] $Result)
     return @($Result.artifacts | ForEach-Object {
-        Assert-AutomationEventString -Object $_ -Name 'type' -Context 'Executor result artifact'
-        Assert-AutomationEventString -Object $_ -Name 'path' -Context 'Executor result artifact'
-        $artifact = [pscustomobject]@{ type = [string] $_.type; path = [string] $_.path }
+        foreach ($field in @('artifactId', 'artifactType', 'archiveFormat', 'localPath', 'fileName', 'hash', 'executionPlanFingerprint', 'packagingPolicyId', 'packagingPolicyFingerprint')) {
+            Assert-AutomationEventString -Object $_ -Name $field -Context 'Executor result artifact'
+        }
+        if (-not (Test-AutomationEventProperty -Object $_ -Name 'createdAt') -or [string]::IsNullOrWhiteSpace([string] $_.createdAt)) {
+            throw "Executor result artifact validation failed: field 'createdAt' must not be empty."
+        }
+        if (-not (Test-AutomationEventProperty -Object $_ -Name 'fileSize')) {
+            throw "Executor result artifact validation failed: missing required field 'fileSize'."
+        }
+        if (-not (Test-AutomationEventProperty -Object $_ -Name 'packagingValidation')) {
+            throw "Executor result artifact validation failed: missing required field 'packagingValidation'."
+        }
+        $artifact = [pscustomobject]@{
+            artifactId = [string] $_.artifactId
+            artifactType = [string] $_.artifactType
+            archiveFormat = [string] $_.archiveFormat
+            localPath = [string] $_.localPath
+            fileName = [string] $_.fileName
+            fileSize = [int64] $_.fileSize
+            hash = [string] $_.hash
+            executionPlanFingerprint = [string] $_.executionPlanFingerprint
+            packagingPolicyId = [string] $_.packagingPolicyId
+            packagingPolicyFingerprint = [string] $_.packagingPolicyFingerprint
+            packagingValidation = Copy-AutomationEventObject -Value $_.packagingValidation
+            createdAt = [string] $_.createdAt
+        }
         Assert-AutomationEventNoSecrets -Value $artifact -Context 'Executor result artifact'
         $artifact
     })

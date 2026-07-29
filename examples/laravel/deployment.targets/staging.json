@@ -1,0 +1,7 @@
+{
+  "$schema": "../../schemas/deployment.target.schema.json",
+  "schemaVersion": "0.1",
+  "targetId": "staging",
+  "remoteRoot": "/var/www/demo",
+  "applicationPath": "laravel_app"
+}

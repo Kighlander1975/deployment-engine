@@ -71,6 +71,7 @@ function Assert-RemoteDiscoveryPlan {
         schemaVersion = [string] $Plan.schemaVersion
         discoveryType = [string] $Plan.discoveryType
         platform = [string] $Plan.platform
+        targetBinding = if ($Plan.PSObject.Properties.Name -contains 'targetBinding') { $Plan.targetBinding } else { $null }
         probes = @($Plan.probes)
     })
 

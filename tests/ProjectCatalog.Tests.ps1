@@ -158,6 +158,40 @@ try {
     Add-RawManifestProject -ProjectsRoot $schemaInvalidRoot -DirectoryName 'bad' -Content (@{ schemaVersion = '0.1'; project = @{ id = 'schema-bad'; name = 'Schema Bad' } } | ConvertTo-Json -Depth 10) | Out-Null
     Assert-Equal (New-ProjectCatalog -ProjectsRoot $schemaInvalidRoot).projects[0].eligibility 'invalid-manifest' 'Schema-invalid JSON must be invalid-manifest.'
 
+    $sharedManifest = New-TestProjectManifest -Id 'shared-valid' -ProjectRoot (Join-Path $tmp 'shared-valid')
+    $sharedManifest.sharedStorage = [ordered]@{
+        root = 'shared'
+        directories = @([ordered]@{
+            sharedPath = 'laravel_app/storage/app/private'
+            releaseLinkPath = 'laravel_app/storage/app/private'
+            pathKind = 'directory'
+            conflictPolicy = 'fail'
+            initializationPolicy = 'explicit'
+        })
+        files = @()
+    }
+    Test-JsonAgainstProjectManifestSchema -Json ($sharedManifest | ConvertTo-Json -Depth 30)
+    Assert-True $true 'Valid shared storage manifest must be schema-valid.'
+
+    foreach ($case in @(
+        [pscustomobject]@{ field = 'root'; value = ''; pattern = 'root' },
+        [pscustomobject]@{ field = 'sharedPath'; value = '/absolute'; pattern = 'sharedPath' },
+        [pscustomobject]@{ field = 'releaseLinkPath'; value = '/absolute'; pattern = 'releaseLinkPath' },
+        [pscustomobject]@{ field = 'sharedPath'; value = 'laravel_app/../storage'; pattern = 'sharedPath' },
+        [pscustomobject]@{ field = 'releaseLinkPath'; value = 'laravel_app/../storage'; pattern = 'releaseLinkPath' },
+        [pscustomobject]@{ field = 'pathKind'; value = 'folder'; pattern = 'pathKind' },
+        [pscustomobject]@{ field = 'conflictPolicy'; value = 'replace'; pattern = 'conflictPolicy' },
+        [pscustomobject]@{ field = 'initializationPolicy'; value = 'copy-from-release'; pattern = 'initializationPolicy' }
+    )) {
+        $badSharedManifest = $sharedManifest | ConvertTo-Json -Depth 30 | ConvertFrom-Json
+        if ($case.field -eq 'root') {
+            $badSharedManifest.sharedStorage.root = $case.value
+        } else {
+            $badSharedManifest.sharedStorage.directories[0].PSObject.Properties[$case.field].Value = $case.value
+        }
+        Assert-ThrowsLike -Script { Test-JsonAgainstProjectManifestSchema -Json ($badSharedManifest | ConvertTo-Json -Depth 30) } -Pattern $case.pattern -Message "Invalid shared storage schema field must be rejected: $($case.field)"
+    }
+
     $missingIdRoot = New-ProjectsRoot -BasePath $tmp -Name 'missing-id'
     $missingIdManifest = New-TestProjectManifest -Id 'temp' -ProjectRoot (Join-Path $missingIdRoot 'missing')
     $missingIdManifest.project.Remove('id')

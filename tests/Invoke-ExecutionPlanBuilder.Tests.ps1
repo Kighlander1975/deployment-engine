@@ -36,12 +36,28 @@ function New-TestManifest {
   },
   "deployment": {
     "environment": "staging",
-    "serverRoot": "/var/www/demo",
+    "serverRoot": "deployment-target",
     "markerFile": ".deploy-version"
   },
   "protection": {
     "neverUpload": [".env", "storage/**", "vendor/**", "node_modules/**"],
     "neverOverwrite": [".env", ".deploy-version", "storage/**"]
+  },
+  "sharedStorage": {
+    "root": "shared",
+    "directories": [
+      {
+        "sharedPath": "laravel_app/storage/app/private",
+        "releaseLinkPath": "laravel_app/storage/app/private",
+        "pathKind": "directory",
+        "conflictPolicy": "fail",
+        "initializationPolicy": "explicit"
+      }
+    ],
+    "files": []
+  },
+  "classification": {
+    "persistentData": ["laravel_app/storage/app/private/**"]
   }
 }
 '@ | ConvertFrom-Json
@@ -170,6 +186,43 @@ function New-TestAnalysis {
     return $analysis
 }
 
+function New-TestRemoteTarget {
+    param(
+        [string] $RemoteRoot = '/var/www/demo',
+        [string] $ApplicationPath = 'app.example.test',
+        [string] $TargetId = 'staging'
+    )
+
+    return [pscustomobject]@{
+        schemaVersion = '0.1'
+        targetId = $TargetId
+        targetConfigurationPath = 'D:\Targets\staging.json'
+        logicalServerRoot = 'deployment-target'
+        remoteRoot = $RemoteRoot
+        applicationPath = $ApplicationPath
+        applicationRemoteDirectory = "$($RemoteRoot.TrimEnd('/'))/$ApplicationPath"
+        resolution = 'remoteRoot-plus-applicationPath'
+    }
+}
+
+function New-TestTargetConfiguration {
+    param(
+        [string] $RemoteRoot = '/var/www/demo',
+        [string] $ApplicationPath = 'app.example.test',
+        [string] $TargetId = 'staging'
+    )
+
+    return [pscustomobject]@{
+        path = 'D:\Targets\staging.json'
+        value = [pscustomobject]@{
+            schemaVersion = '0.1'
+            targetId = $TargetId
+            remoteRoot = $RemoteRoot
+            applicationPath = $ApplicationPath
+        }
+    }
+}
+
 function Get-Step {
     param([object] $Plan, [string] $Id)
     return @($Plan.steps | Where-Object { $_.id -eq $Id } | Select-Object -First 1)[0]
@@ -177,13 +230,62 @@ function Get-Step {
 
 $manifest = New-TestManifest
 $analysis = New-TestAnalysis
-$unresolvedPlan = New-UnresolvedExecutionPlan -Analysis $analysis -Manifest $manifest
+$remoteTarget = New-TestRemoteTarget
+$resolvedRemoteTarget = Resolve-RemoteTarget -Manifest $manifest -TargetConfiguration (New-TestTargetConfiguration -RemoteRoot '/var/www/demo/')
+Assert-Equal $resolvedRemoteTarget.remoteRoot '/var/www/demo' 'Remote root must be normalized without trailing slash.'
+Assert-Equal $manifest.project.applicationRoot 'laravel_app' 'Local applicationRoot must remain a valid local project path value.'
+Assert-Equal $resolvedRemoteTarget.applicationPath 'app.example.test' 'Remote target resolution must carry target applicationPath.'
+Assert-Equal $resolvedRemoteTarget.applicationRemoteDirectory '/var/www/demo/app.example.test' 'Remote target resolution must combine remoteRoot and target applicationPath.'
+Assert-Equal $resolvedRemoteTarget.logicalServerRoot 'deployment-target' 'Remote target resolution must preserve logical server root.'
+
+foreach ($badRemoteRoot in @('', 'relative/root', './relative', '/var/www/../escape', '/var/www/.', '/var//www')) {
+    try {
+        [void] (Resolve-RemoteTarget -Manifest $manifest -TargetConfiguration (New-TestTargetConfiguration -RemoteRoot $badRemoteRoot))
+        $script:failures.Add("Invalid remoteRoot must be rejected: '$badRemoteRoot'")
+    } catch {
+        Assert-True ($_.Exception.Message -match 'remoteRoot|absolute POSIX|segments') "Invalid remoteRoot must produce controlled error: '$badRemoteRoot'"
+    }
+}
+
+try {
+    $missingRemoteRootTarget = New-TestTargetConfiguration
+    $missingRemoteRootTarget.value.PSObject.Properties.Remove('remoteRoot')
+    [void] (Resolve-RemoteTarget -Manifest $manifest -TargetConfiguration $missingRemoteRootTarget)
+    $script:failures.Add('Missing remoteRoot must be rejected.')
+} catch {
+    Assert-True ($_.Exception.Message -match 'remoteRoot') 'Missing remoteRoot must produce controlled error.'
+}
+
+try {
+    $missingApplicationPathTarget = New-TestTargetConfiguration
+    $missingApplicationPathTarget.value.PSObject.Properties.Remove('applicationPath')
+    [void] (Resolve-RemoteTarget -Manifest $manifest -TargetConfiguration $missingApplicationPathTarget)
+    $script:failures.Add('Missing applicationPath must be rejected.')
+} catch {
+    Assert-True ($_.Exception.Message -match 'applicationPath') 'Missing applicationPath must produce controlled error.'
+}
+
+foreach ($badApplicationPath in @('', '/absolute', '.', '..', 'app/../laravel_app', 'app/./laravel_app', 'app//laravel_app')) {
+    try {
+        [void] (Resolve-RemoteTarget -Manifest $manifest -TargetConfiguration (New-TestTargetConfiguration -ApplicationPath $badApplicationPath))
+        $script:failures.Add("Invalid target.applicationPath must be rejected: '$badApplicationPath'")
+    } catch {
+        Assert-True ($_.Exception.Message -match 'applicationPath|relative|segments|empty') "Invalid applicationPath must produce controlled error: '$badApplicationPath'"
+    }
+}
+
+$remoteOnlyManifest = New-TestManifest
+$remoteOnlyManifest.project.applicationRoot = 'different-local-app'
+$remoteOnlyTarget = Resolve-RemoteTarget -Manifest $remoteOnlyManifest -TargetConfiguration (New-TestTargetConfiguration -RemoteRoot '/var/www/demo' -ApplicationPath 'remote-app')
+Assert-Equal $remoteOnlyTarget.applicationRemoteDirectory '/var/www/demo/remote-app' 'project.applicationRoot must not influence remote target resolution.'
+
+$unresolvedPlan = New-UnresolvedExecutionPlan -Analysis $analysis -Manifest $manifest -RemoteTarget $remoteTarget
 $unresolvedBeforeResolve = $unresolvedPlan | ConvertTo-Json -Depth 30
 $resolvedFromUnresolved = Resolve-DeploymentCapabilities -Plan $unresolvedPlan
 $unresolvedAfterResolve = $unresolvedPlan | ConvertTo-Json -Depth 30
-$plan = New-ExecutionPlan -Analysis $analysis -Manifest $manifest
+$plan = New-ExecutionPlan -Analysis $analysis -Manifest $manifest -RemoteTarget $remoteTarget
 $planJsonA = $plan | ConvertTo-Json -Depth 30
-$planJsonB = (New-ExecutionPlan -Analysis $analysis -Manifest $manifest) | ConvertTo-Json -Depth 30
+$planJsonB = (New-ExecutionPlan -Analysis $analysis -Manifest $manifest -RemoteTarget $remoteTarget) | ConvertTo-Json -Depth 30
 
 Assert-Equal $unresolvedBeforeResolve $unresolvedAfterResolve 'Resolver must not mutate the unresolved input plan.'
 Assert-True (-not (Test-PropertyValue -Object $unresolvedPlan -Name 'resolved')) 'Unresolved input plan must not receive resolved flag.'
@@ -191,7 +293,114 @@ Assert-True $resolvedFromUnresolved.resolved 'Resolved plan must receive resolve
 Assert-Equal $plan.blocked $false 'Empty blocker list must not block the plan.'
 Assert-Equal ($plan.phases -join ',') 'preconditions,environment-review,local-frontend-build,local-deployment-preparation,runtime-file-transfer,runtime-cleanup,remote-dependency-installation,database-review,remote-migrations,remote-runtime-maintenance,deployment-verification,deployment-marker-update' 'Phase order must be stable.'
 Assert-Equal $planJsonA $planJsonB 'Execution plan output must be deterministic.'
+Assert-True (-not [string]::IsNullOrWhiteSpace([string] $plan.executionPlanFingerprint)) 'Resolved execution plan must include an executionPlanFingerprint.'
+Assert-Equal $plan.executionPlanFingerprint (Get-ExecutionPlanFingerprint -Plan $plan) 'Resolved execution plan fingerprint must match canonical plan content.'
 Assert-Equal $plan.steps[-1].id 'deployment-marker.update' 'Deployment marker update must be the final step.'
+Assert-Equal $plan.environment.applicationRemoteDirectory '/var/www/demo/app.example.test' 'Resolved plan must contain absolute application remote directory.'
+Assert-Equal $plan.environment.remoteTarget.remoteRoot '/var/www/demo' 'Resolved plan must carry normalized remote root.'
+Assert-Equal $plan.environment.remoteTarget.applicationPath 'app.example.test' 'Resolved plan must carry target application path.'
+Assert-True $plan.environment.sharedStorage.configurationPresent 'Resolved plan must mark shared storage configuration as present.'
+Assert-True $plan.environment.sharedStorage.rootResolved 'Resolved plan must mark shared storage root as resolved.'
+Assert-Equal $plan.environment.sharedStorage.root 'shared' 'Resolved plan must carry explicit shared storage root.'
+Assert-Equal $plan.environment.sharedStorage.sharedRootAbsolutePath '/var/www/demo/app.example.test/shared' 'Shared storage root must resolve below applicationRemoteDirectory.'
+Assert-Equal @($plan.environment.sharedStorage.directories).Count 1 'Resolved plan must carry exactly one shared directory.'
+Assert-Equal @($plan.environment.sharedStorage.files).Count 0 'Resolved plan must carry zero shared files.'
+Assert-Equal $plan.environment.sharedStorage.directories[0].sharedPath 'laravel_app/storage/app/private' 'Resolved plan must carry the configured shared target path.'
+Assert-Equal $plan.environment.sharedStorage.directories[0].releaseLinkPath 'laravel_app/storage/app/private' 'Resolved plan must carry the configured release link path.'
+Assert-Equal $plan.environment.sharedStorage.directories[0].pathKind 'directory' 'Resolved plan must carry path kind.'
+Assert-Equal $plan.environment.sharedStorage.directories[0].conflictPolicy 'fail' 'Resolved plan must carry fail conflict policy.'
+Assert-Equal $plan.environment.sharedStorage.directories[0].initializationPolicy 'explicit' 'Resolved plan must carry explicit initialization policy.'
+Assert-Equal $plan.environment.sharedStorage.directories[0].sharedAbsolutePath '/var/www/demo/app.example.test/shared/laravel_app/storage/app/private' 'Shared target must resolve below shared root.'
+Assert-Equal $plan.environment.sharedStorage.directories[0].releaseLinkAbsolutePath '/var/www/demo/app.example.test/laravel_app/storage/app/private' 'Release link must resolve below application directory before release binding.'
+Assert-True ('laravel_app/storage/app/private/**' -in @($manifest.classification.persistentData)) 'Manifest persistentData must include the shared storage boundary.'
+$remoteRootChangedPlan = New-ExecutionPlan -Analysis $analysis -Manifest $manifest -RemoteTarget (New-TestRemoteTarget -RemoteRoot '/var/www/other' -ApplicationPath 'app.example.test' -TargetId 'staging')
+$applicationPathChangedPlan = New-ExecutionPlan -Analysis $analysis -Manifest $manifest -RemoteTarget (New-TestRemoteTarget -RemoteRoot '/var/www/demo' -ApplicationPath 'other.example.test' -TargetId 'staging')
+$targetIdChangedPlan = New-ExecutionPlan -Analysis $analysis -Manifest $manifest -RemoteTarget (New-TestRemoteTarget -RemoteRoot '/var/www/demo' -ApplicationPath 'app.example.test' -TargetId 'production')
+$remoteDirectoryChangedPlan = New-ExecutionPlan -Analysis $analysis -Manifest $manifest -RemoteTarget ([pscustomobject]@{
+    schemaVersion = '0.1'
+    targetId = 'staging'
+    targetConfigurationPath = 'D:\Targets\staging.json'
+    logicalServerRoot = 'deployment-target'
+    remoteRoot = '/var/www/demo'
+    applicationPath = 'app.example.test'
+    applicationRemoteDirectory = '/var/www/demo/manual-different'
+    resolution = 'test-manual-difference'
+})
+Assert-True ($remoteRootChangedPlan.executionPlanFingerprint -ne $plan.executionPlanFingerprint) 'Changing remoteRoot must change executionPlanFingerprint.'
+Assert-True ($applicationPathChangedPlan.executionPlanFingerprint -ne $plan.executionPlanFingerprint) 'Changing applicationPath must change executionPlanFingerprint.'
+Assert-True ($targetIdChangedPlan.executionPlanFingerprint -ne $plan.executionPlanFingerprint) 'Changing targetId must change executionPlanFingerprint.'
+Assert-True ($remoteDirectoryChangedPlan.executionPlanFingerprint -ne $plan.executionPlanFingerprint) 'Changing applicationRemoteDirectory must change executionPlanFingerprint.'
+$sharedRootChangedManifest = New-TestManifest
+$sharedRootChangedManifest.sharedStorage.root = 'other-shared'
+$sharedRootChangedPlan = New-ExecutionPlan -Analysis $analysis -Manifest $sharedRootChangedManifest -RemoteTarget $remoteTarget
+Assert-True ($sharedRootChangedPlan.executionPlanFingerprint -ne $plan.executionPlanFingerprint) 'Changing shared storage contract must change executionPlanFingerprint.'
+
+foreach ($badSharedPath in @('', '/absolute', '.', '..', 'laravel_app/../storage', 'laravel_app//storage')) {
+    $badManifest = New-TestManifest
+    $badManifest.sharedStorage.directories[0].sharedPath = $badSharedPath
+    try {
+        [void] (New-ExecutionPlan -Analysis $analysis -Manifest $badManifest -RemoteTarget $remoteTarget)
+        $script:failures.Add("Invalid sharedPath must be rejected: '$badSharedPath'")
+    } catch {
+        Assert-True ($_.Exception.Message -match 'sharedPath|relative|empty|segments|traversal') "Invalid sharedPath must produce controlled error: '$badSharedPath'"
+    }
+}
+
+foreach ($badReleaseLinkPath in @('', '/absolute', '.', '..', 'laravel_app/../storage', 'laravel_app//storage')) {
+    $badManifest = New-TestManifest
+    $badManifest.sharedStorage.directories[0].releaseLinkPath = $badReleaseLinkPath
+    try {
+        [void] (New-ExecutionPlan -Analysis $analysis -Manifest $badManifest -RemoteTarget $remoteTarget)
+        $script:failures.Add("Invalid releaseLinkPath must be rejected: '$badReleaseLinkPath'")
+    } catch {
+        Assert-True ($_.Exception.Message -match 'releaseLinkPath|relative|empty|segments|traversal') "Invalid releaseLinkPath must produce controlled error: '$badReleaseLinkPath'"
+    }
+}
+
+$missingSharedRoot = New-TestManifest
+$missingSharedRoot.sharedStorage.root = ''
+try {
+    [void] (New-ExecutionPlan -Analysis $analysis -Manifest $missingSharedRoot -RemoteTarget $remoteTarget)
+    $script:failures.Add('Missing shared storage root must be rejected.')
+} catch {
+    Assert-True ($_.Exception.Message -match 'Shared storage.*root') 'Missing shared storage root must produce controlled error.'
+}
+
+$duplicateShared = New-TestManifest
+$duplicateShared.sharedStorage.directories += ($duplicateShared.sharedStorage.directories[0] | ConvertTo-Json -Depth 10 | ConvertFrom-Json)
+try {
+    [void] (New-ExecutionPlan -Analysis $analysis -Manifest $duplicateShared -RemoteTarget $remoteTarget)
+    $script:failures.Add('Duplicate shared storage entry must be rejected.')
+} catch {
+    Assert-True ($_.Exception.Message -match 'duplicate') 'Duplicate shared storage entry must produce controlled error.'
+}
+
+$badKind = New-TestManifest
+$badKind.sharedStorage.directories[0].pathKind = 'folder'
+try {
+    [void] (New-ExecutionPlan -Analysis $analysis -Manifest $badKind -RemoteTarget $remoteTarget)
+    $script:failures.Add('Unsupported shared storage pathKind must be rejected.')
+} catch {
+    Assert-True ($_.Exception.Message -match 'pathKind') 'Unsupported shared storage pathKind must produce controlled error.'
+}
+
+$badConflict = New-TestManifest
+$badConflict.sharedStorage.directories[0].conflictPolicy = 'replace'
+try {
+    [void] (New-ExecutionPlan -Analysis $analysis -Manifest $badConflict -RemoteTarget $remoteTarget)
+    $script:failures.Add('Unsupported shared storage conflict policy must be rejected.')
+} catch {
+    Assert-True ($_.Exception.Message -match 'conflictPolicy') 'Unsupported shared storage conflict policy must produce controlled error.'
+}
+
+$badInitialization = New-TestManifest
+$badInitialization.sharedStorage.directories[0].initializationPolicy = 'copy-from-release'
+try {
+    [void] (New-ExecutionPlan -Analysis $analysis -Manifest $badInitialization -RemoteTarget $remoteTarget)
+    $script:failures.Add('Unsupported shared storage initialization policy must be rejected.')
+} catch {
+    Assert-True ($_.Exception.Message -match 'initializationPolicy') 'Unsupported shared storage initialization policy must produce controlled error.'
+}
 $stepIds = @($plan.steps | ForEach-Object { $_.id })
 $existingStepIds = @(
     'preconditions.analysis-review',
@@ -240,13 +449,13 @@ Assert-Equal $migrationStep.executionMode 'human' 'Migration step must be a huma
 Assert-Equal $migrationStep.status 'blocked' 'Migration step must remain blocked while earlier review gates are open.'
 Assert-Equal $migrationStep.instructions.command 'php artisan migrate --force' 'Migration command must be complete.'
 Assert-Equal $migrationStep.instructions.displayCommand 'php artisan migrate --force' 'Resolver must add display command.'
-Assert-Equal $migrationStep.instructions.workingDirectory '/var/www/demo/laravel_app' 'Migration working directory must be displayed.'
+Assert-Equal $migrationStep.instructions.workingDirectory '/var/www/demo/app.example.test' 'Migration working directory must be displayed.'
 Assert-Equal $migrationStep.riskLevel 'high' 'Migration execution must be marked high risk.'
 Assert-True $migrationStep.approvalRequired 'Migration execution must require approval.'
 Assert-True $migrationStep.validation.requiresOutput 'Migration validation must require output.'
 Assert-True $migrationStep.validation.ambiguousWithoutSuccessMatch 'Missing positive migration evidence must be ambiguous.'
 
-$migrationOnlyPlan = New-ExecutionPlan -Analysis (New-TestAnalysis -RuntimeDeploymentRequired $false -FrontendBuildRequired $false -MigrationsRequired $true -EnvironmentReviewRequired $false -SeederReviewRequired $false -CleanupRequired $false) -Manifest $manifest
+$migrationOnlyPlan = New-ExecutionPlan -Analysis (New-TestAnalysis -RuntimeDeploymentRequired $false -FrontendBuildRequired $false -MigrationsRequired $true -EnvironmentReviewRequired $false -SeederReviewRequired $false -CleanupRequired $false) -Manifest $manifest -RemoteTarget $remoteTarget
 $migrationSafetyStep = Get-Step -Plan $migrationOnlyPlan -Id 'remote.migrations.safety-review'
 $migrationStatusStep = Get-Step -Plan $migrationOnlyPlan -Id 'remote.migrations.status'
 $waitingMigrationStep = Get-Step -Plan $migrationOnlyPlan -Id 'remote.migrations.execute'
@@ -287,7 +496,7 @@ foreach ($forbiddenCommand in @('php artisan migrate:fresh', 'php artisan migrat
 }
 
 try {
-    $badPlan = New-UnresolvedExecutionPlan -Analysis $analysis -Manifest $manifest
+    $badPlan = New-UnresolvedExecutionPlan -Analysis $analysis -Manifest $manifest -RemoteTarget $remoteTarget
     $badStep = Get-Step -Plan $badPlan -Id 'remote.migrations.execute'
     $badStep.capabilityId = 'unknown.capability'
     $badStep.instructions.capabilityId = 'unknown.capability'
@@ -303,21 +512,21 @@ Assert-Equal $resolvedStatusStep.riskLevel 'high' 'Resolver must apply capabilit
 Assert-True $resolvedStatusStep.approvalRequired 'Resolver must apply capability approval flag.'
 Assert-True $resolvedStatusStep.validation.requiresOutput 'Resolver must apply capability validation rules.'
 
-$backupCapabilityTruePlan = New-UnresolvedExecutionPlan -Analysis $analysis -Manifest $manifest
+$backupCapabilityTruePlan = New-UnresolvedExecutionPlan -Analysis $analysis -Manifest $manifest -RemoteTarget $remoteTarget
 $backupCapabilityTrueStep = Get-Step -Plan $backupCapabilityTruePlan -Id 'remote.migrations.status'
 Add-Member -InputObject $backupCapabilityTrueStep.instructions -MemberType NoteProperty -Name 'requiresBackupConfirmation' -Value $false
 $resolvedBackupCapabilityTruePlan = Resolve-DeploymentCapabilities -Plan $backupCapabilityTruePlan
 $resolvedBackupCapabilityTrueStep = Get-Step -Plan $resolvedBackupCapabilityTruePlan -Id 'remote.migrations.status'
 Assert-True $resolvedBackupCapabilityTrueStep.instructions.requiresBackupConfirmation 'Capability backup requirement true must not be lowered by builder false.'
 
-$backupBuilderTruePlan = New-UnresolvedExecutionPlan -Analysis $analysis -Manifest $manifest
+$backupBuilderTruePlan = New-UnresolvedExecutionPlan -Analysis $analysis -Manifest $manifest -RemoteTarget $remoteTarget
 $backupBuilderTrueStep = Get-Step -Plan $backupBuilderTruePlan -Id 'deployment.verification.remote-about'
 Add-Member -InputObject $backupBuilderTrueStep.instructions -MemberType NoteProperty -Name 'requiresBackupConfirmation' -Value $true
 $resolvedBackupBuilderTruePlan = Resolve-DeploymentCapabilities -Plan $backupBuilderTruePlan
 $resolvedBackupBuilderTrueStep = Get-Step -Plan $resolvedBackupBuilderTruePlan -Id 'deployment.verification.remote-about'
 Assert-True $resolvedBackupBuilderTrueStep.instructions.requiresBackupConfirmation 'Builder backup requirement true must be preserved when capability is false.'
 
-$mergePlan = New-UnresolvedExecutionPlan -Analysis $analysis -Manifest $manifest
+$mergePlan = New-UnresolvedExecutionPlan -Analysis $analysis -Manifest $manifest -RemoteTarget $remoteTarget
 $mergeStep = Get-Step -Plan $mergePlan -Id 'remote.migrations.execute'
 $mergeStep.validation = [pscustomobject]@{
     requiresOutput = $false
@@ -348,7 +557,7 @@ Assert-True ($resolvedMergeStep.continuation.requiredUserAction -match 'Der Proz
 Assert-True ($resolvedMergeStep.continuation.requiredUserAction -match 'Zusatzfreigabe pruefen') 'Required user action must include builder action.'
 
 try {
-    $badContinuationPlan = New-UnresolvedExecutionPlan -Analysis $analysis -Manifest $manifest
+    $badContinuationPlan = New-UnresolvedExecutionPlan -Analysis $analysis -Manifest $manifest -RemoteTarget $remoteTarget
     $badContinuationStep = Get-Step -Plan $badContinuationPlan -Id 'remote.migrations.execute'
     $badContinuationStep.continuation = [pscustomobject]@{
         allowedStatusesForDependents = @('failed')
@@ -362,7 +571,7 @@ try {
 }
 
 try {
-    $modeConflictPlan = New-UnresolvedExecutionPlan -Analysis $analysis -Manifest $manifest
+    $modeConflictPlan = New-UnresolvedExecutionPlan -Analysis $analysis -Manifest $manifest -RemoteTarget $remoteTarget
     $modeConflictStep = Get-Step -Plan $modeConflictPlan -Id 'remote.migrations.execute'
     $modeConflictStep.executionMode = 'agent'
     [void] (Resolve-DeploymentCapabilities -Plan $modeConflictPlan)
@@ -372,7 +581,7 @@ try {
 }
 
 try {
-    $idConflictPlan = New-UnresolvedExecutionPlan -Analysis $analysis -Manifest $manifest
+    $idConflictPlan = New-UnresolvedExecutionPlan -Analysis $analysis -Manifest $manifest -RemoteTarget $remoteTarget
     $idConflictStep = Get-Step -Plan $idConflictPlan -Id 'remote.migrations.execute'
     $idConflictStep.instructions.capabilityId = 'artisan.about'
     [void] (Resolve-DeploymentCapabilities -Plan $idConflictPlan)
@@ -381,7 +590,7 @@ try {
     Assert-True ($_.Exception.Message -match 'Capability id mismatch') 'Capability id mismatch must produce a controlled error.'
 }
 
-$weakenedPlan = New-UnresolvedExecutionPlan -Analysis $analysis -Manifest $manifest
+$weakenedPlan = New-UnresolvedExecutionPlan -Analysis $analysis -Manifest $manifest -RemoteTarget $remoteTarget
 $weakenedStep = Get-Step -Plan $weakenedPlan -Id 'remote.migrations.status'
 $weakenedStep.riskLevel = 'low'
 $weakenedStep.approvalRequired = $false
@@ -390,24 +599,24 @@ $resolvedWeakenedStep = Get-Step -Plan $resolvedWeakenedPlan -Id 'remote.migrati
 Assert-Equal $resolvedWeakenedStep.riskLevel 'high' 'Resolver must not let builder lower capability risk level.'
 Assert-True $resolvedWeakenedStep.approvalRequired 'Resolver must not let builder lower capability approval requirement.'
 
-$protectedPlan = New-ExecutionPlan -Analysis (New-TestAnalysis -ProtectedFileReviewRequired $true) -Manifest $manifest
+$protectedPlan = New-ExecutionPlan -Analysis (New-TestAnalysis -ProtectedFileReviewRequired $true) -Manifest $manifest -RemoteTarget $remoteTarget
 $protectedStep = Get-Step -Plan $protectedPlan -Id 'environment.protected-files-review'
 Assert-Equal $protectedStep.executionMode 'review' 'Protected files must create a review gate.'
 Assert-Equal $protectedStep.status 'waiting-for-review' 'Protected file review must block continuation.'
 Assert-True (@($protectedStep.instructions.affectedPaths) -contains 'laravel_app/public/.htaccess') 'Protected review must list affected paths.'
 
-$documentationPlan = New-ExecutionPlan -Analysis (New-TestAnalysis -RuntimeDeploymentRequired $false -FrontendBuildRequired $false -MigrationsRequired $false -EnvironmentReviewRequired $false -CleanupRequired $false -DocumentationOnly $true) -Manifest $manifest
+$documentationPlan = New-ExecutionPlan -Analysis (New-TestAnalysis -RuntimeDeploymentRequired $false -FrontendBuildRequired $false -MigrationsRequired $false -EnvironmentReviewRequired $false -CleanupRequired $false -DocumentationOnly $true) -Manifest $manifest -RemoteTarget $remoteTarget
 Assert-Equal (Get-Step -Plan $documentationPlan -Id 'runtime.transfer.review').required $false 'Documentation-only analysis must skip runtime transfer.'
 Assert-Equal (Get-Step -Plan $documentationPlan -Id 'deployment-marker.update').status 'skipped' 'Documentation-only analysis must skip marker update.'
 
-$blockedPlan = New-ExecutionPlan -Analysis (New-TestAnalysis -Blockers @('Baseline commit is not an ancestor of the target commit.')) -Manifest $manifest
+$blockedPlan = New-ExecutionPlan -Analysis (New-TestAnalysis -Blockers @('Baseline commit is not an ancestor of the target commit.')) -Manifest $manifest -RemoteTarget $remoteTarget
 Assert-Equal $blockedPlan.blocked $true 'Analyzer blockers must block the plan.'
 Assert-Equal (Get-Step -Plan $blockedPlan -Id 'preconditions.analysis-review').status 'blocked' 'Blockers must not become normal executable steps.'
 
 try {
     $invalidVersion = New-TestAnalysis
     $invalidVersion.engineVersion = '9.9'
-    [void] (New-ExecutionPlan -Analysis $invalidVersion -Manifest $manifest)
+    [void] (New-ExecutionPlan -Analysis $invalidVersion -Manifest $manifest -RemoteTarget $remoteTarget)
     $script:failures.Add('Unknown analysis version must be rejected.')
 } catch {
     Assert-True ($_.Exception.Message -match 'Unsupported analysis version') 'Unknown analysis version must produce a controlled error.'
@@ -416,7 +625,7 @@ try {
 try {
     $invalidManifest = New-TestManifest
     $invalidManifest.deployment.serverRoot = ''
-    [void] (New-ExecutionPlan -Analysis $analysis -Manifest $invalidManifest)
+    [void] (New-ExecutionPlan -Analysis $analysis -Manifest $invalidManifest -RemoteTarget $remoteTarget)
     $script:failures.Add('Invalid manifest must be rejected.')
 } catch {
     Assert-True ($_.Exception.Message -match 'Manifest validation failed') 'Invalid manifest must produce a controlled error.'
@@ -425,8 +634,7 @@ try {
 if ($script:failures.Count -gt 0) {
     Write-Host 'Execution Plan Builder tests failed:'
     $script:failures | ForEach-Object { Write-Host "- $_" }
-    exit 1
+    throw 'Execution Plan Builder tests failed.'
 }
 
 Write-Host 'Execution Plan Builder tests passed.'
-exit 0

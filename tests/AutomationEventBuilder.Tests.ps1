@@ -69,8 +69,8 @@ function New-TestCommandPlan {
         executionPolicy = [pscustomobject]@{ executionAllowed = $false; automaticExecutionAllowed = $false; remoteExecutionMode = 'copy-and-run' }
         commands = @(
             New-TestCommand -Id 'source.validate' -Sequence 100 -Actor 'automation' -Location 'local' -Mode 'automatic' -Program 'local-operation' -Operation ([pscustomobject]@{ sourcePath = $SourcePath })
-            New-TestCommand -Id 'archive.create' -Sequence 300 -Actor 'automation' -Location 'local' -Mode 'automatic' -Program 'local-operation' -DependsOn @('source.validate') -Operation ([pscustomobject]@{ sourcePath = $SourcePath; artifactPath = $ArtifactPath })
-            New-TestCommand -Id 'remote.archive.upload' -Sequence 600 -Actor 'human-command' -Location 'local-to-remote' -Mode 'copy-and-run' -Program 'scp' -DependsOn @('deployment.approval') -RenderedCommand 'scp artifact deploy@example.org:/absolute/artifact.zip'
+            New-TestCommand -Id 'archive.create' -Sequence 300 -Actor 'automation' -Location 'local' -Mode 'automatic' -Program 'local-operation' -DependsOn @('source.validate') -Operation ([pscustomobject]@{ sourcePath = $SourcePath; artifactPath = $ArtifactPath; executionPlanFingerprint = 'execution-plan-fingerprint-a'; packagingPolicy = [pscustomobject]@{ policyId = 'packaging-policy-test'; projectId = 'demo'; artifactType = 'deployment-archive'; vendorStrategy = 'exclude-install-on-target-from-lockfiles'; includedPaths = @('**'); excludedPaths = @('storage/**'); executionPlanFingerprint = 'execution-plan-fingerprint-a'; createdAt = '2026-07-28T12:00:00Z' } })
+            New-TestCommand -Id 'artifact.upload' -Sequence 600 -Actor 'human-command' -Location 'artifact-transport' -Mode 'copy-and-run' -Program 'network-share' -DependsOn @('deployment.approval') -RenderedCommand 'Copy-Item -LiteralPath artifact.zip -Destination D:\\Share\\.deployment\\uploads\\artifact.zip'
         )
         humanGates = @(
             [pscustomobject]@{ gateId = 'deployment.approval'; stepId = 'deployment.approval'; sequence = 400; dependsOn = @('archive.create'); gateType = 'approval'; blocksContinuation = $true; allowedResponses = @('approved', 'rejected') }
@@ -138,8 +138,8 @@ $wrongCommand = Copy-TestObject -Value $request
 $wrongCommand.commandId = 'archive.create'
 Assert-ThrowsLike -Script { Build-AutomationStartedEvent -CommandSession $session -ExecutorRequest $wrongCommand -Timestamp $timestamp | Out-Null } -Pattern 'commandId' -Message 'Started builder must reject wrong commandId.'
 $humanRequest = Copy-TestObject -Value $request
-$humanRequest.itemId = 'remote.archive.upload'
-$humanRequest.commandId = 'remote.archive.upload'
+$humanRequest.itemId = 'artifact.upload'
+$humanRequest.commandId = 'artifact.upload'
 Assert-ThrowsLike -Script { Build-AutomationStartedEvent -CommandSession $session -ExecutorRequest $humanRequest -Timestamp $timestamp | Out-Null } -Pattern 'current item|does not match' -Message 'Started builder must reject human item targets.'
 $remoteRequest = Copy-TestObject -Value $request
 $remoteRequest.executionLocation = 'remote'
@@ -230,11 +230,26 @@ Assert-ThrowsLike -Script { Build-AutomationResultEvent -CommandSession $running
 $cancelWhileRunning = Apply-CommandSessionEvent -CommandSession $running -Event (New-SessionEvent -Id 'cancel-result-test' -Type 'session-cancelled' -Target '' -Payload $null)
 Assert-ThrowsLike -Script { Build-AutomationResultEvent -CommandSession $cancelWhileRunning -ExecutorRequest $request -ExecutorResult $completedResult -Timestamp '2026-07-27T12:00:01Z' | Out-Null } -Pattern 'terminal session|cancelled' -Message 'Result builder must reject event after cancellation.'
 $artifactResult = Copy-TestObject -Value $completedResult
-$artifactResult.artifacts = @([pscustomobject]@{ type = 'zip'; path = 'D:\Artifacts\deployment.zip' })
+$artifactResult.artifacts = @([pscustomobject]@{
+    artifactId = 'runtime-artifact-test'
+    artifactType = 'deployment-archive'
+    archiveFormat = 'zip'
+    localPath = 'D:\Artifacts\deployment.zip'
+    fileName = 'deployment.zip'
+    fileSize = 123
+    hash = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+    executionPlanFingerprint = 'execution-plan-fingerprint-a'
+    packagingPolicyId = 'packaging-policy-test'
+    packagingPolicyFingerprint = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+    packagingValidation = [pscustomobject]@{ includedFileCount = 2; excludedFileCount = 1; includedBytes = 123 }
+    createdAt = '2026-07-28T11:38:00.0000000Z'
+})
 $artifactEvent = Build-AutomationResultEvent -CommandSession $running -ExecutorRequest $request -ExecutorResult $artifactResult -Timestamp '2026-07-27T12:00:01Z'
 Assert-Equal @($artifactEvent.result.artifacts).Count 1 'Result event must keep structured artifacts.'
-Assert-Equal $artifactEvent.result.artifacts[0].type 'zip' 'Artifact type must be preserved.'
-Assert-Equal $artifactEvent.result.artifacts[0].path 'D:\Artifacts\deployment.zip' 'Artifact path must be preserved.'
+Assert-Equal $artifactEvent.result.artifacts[0].artifactType 'deployment-archive' 'Artifact type must be preserved.'
+Assert-Equal $artifactEvent.result.artifacts[0].localPath 'D:\Artifacts\deployment.zip' 'Artifact path must be preserved.'
+Assert-Equal $artifactEvent.result.artifacts[0].executionPlanFingerprint 'execution-plan-fingerprint-a' 'Artifact fingerprint binding must be preserved.'
+Assert-Equal $artifactEvent.result.artifacts[0].packagingPolicyId 'packaging-policy-test' 'Artifact packaging policy binding must be preserved.'
 
 $tmp = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath ('automation-event-builder-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $tmp | Out-Null

@@ -4,6 +4,7 @@
   "status": "ready",
   "sourceStrategyType": "deployment",
   "selectedAdapterId": "archive.zip",
+  "executionPlanFingerprint": "example-execution-plan-fingerprint",
   "executionPolicy": {
     "executionAllowed": false,
     "automaticExecutionAllowed": false,
@@ -14,14 +15,14 @@
       "commandId": "source.validate",
       "sequence": 100,
       "strategyStepId": "source.validate",
-      "operationType": "source.validate",
+      "operationType": "source-validate",
       "actor": "automation",
       "executionLocation": "local",
       "executionMode": "automatic",
       "dependsOn": [],
       "program": "local-operation",
       "arguments": [
-        "source.validate"
+        "source-validate"
       ],
       "workingDirectory": "",
       "environment": {},
@@ -31,7 +32,7 @@
       "renderedCommand": "",
       "display": {
         "title": "source.validate",
-        "description": "",
+        "description": "Structured local operation for later executor support.",
         "copyable": false
       },
       "feedback": {
@@ -47,35 +48,45 @@
       "diagnostic": ""
     },
     {
-      "commandId": "archive.create",
-      "sequence": 200,
-      "strategyStepId": "archive.create",
-      "operationType": "archive.create",
-      "actor": "automation",
-      "executionLocation": "local",
-      "executionMode": "automatic",
+      "commandId": "artifact.upload",
+      "sequence": 600,
+      "strategyStepId": "artifact.upload",
+      "operationType": "artifact-upload",
+      "actor": "human-command",
+      "executionLocation": "artifact-transport",
+      "executionMode": "copy-and-run",
       "dependsOn": [
-        "source.validate"
+        "remote.release-directory.prepare"
       ],
-      "program": "local-operation",
+      "program": "network-share",
       "arguments": [
-        "archive.create"
+        "D:\\DeploymentRuntime\\runs\\example\\artifacts\\deployment.zip",
+        "D:\\Projects\\demo\\netzlaufwerk\\.deployment\\uploads\\deployment.zip"
       ],
       "workingDirectory": "",
       "environment": {},
       "operation": {
-        "sourcePath": "examples/e2e/source",
-        "artifactPath": ""
+        "adapterId": "network-share",
+        "artifactId": "runtime-artifact-example",
+        "executionPlanFingerprint": "example-execution-plan-fingerprint",
+        "localArtifactPath": "D:\\DeploymentRuntime\\runs\\example\\artifacts\\deployment.zip",
+        "networkShareUploadDirectory": "D:\\Projects\\demo\\netzlaufwerk\\.deployment\\uploads",
+        "networkShareArchivePath": "D:\\Projects\\demo\\netzlaufwerk\\.deployment\\uploads\\deployment.zip",
+        "remoteArchivePath": "/var/www/example/.deployment/uploads/deployment.zip"
       },
-      "renderedCommand": "",
+      "renderedCommand": "Copy-Item -LiteralPath D:\\DeploymentRuntime\\runs\\example\\artifacts\\deployment.zip -Destination D:\\Projects\\demo\\netzlaufwerk\\.deployment\\uploads\\deployment.zip",
       "display": {
-        "title": "archive.create",
-        "description": "",
-        "copyable": false
+        "title": "Deployment-Archiv ueber Netzlaufwerk hochladen",
+        "description": "Copyable local artifact transport command. Contains no remote command.",
+        "copyable": true
       },
       "feedback": {
-        "required": false,
-        "expectedData": []
+        "required": true,
+        "expectedData": [
+          "exitStatus",
+          "stdout",
+          "stderr"
+        ]
       },
       "safety": {
         "destructive": false,
@@ -86,34 +97,202 @@
       "diagnostic": ""
     },
     {
-      "commandId": "post.approval.source.validate",
-      "sequence": 400,
-      "strategyStepId": "post.approval.source.validate",
-      "operationType": "source.validate",
-      "actor": "automation",
-      "executionLocation": "local",
-      "executionMode": "automatic",
+      "commandId": "remote.release.prepare",
+      "sequence": 650,
+      "strategyStepId": "remote.release.prepare",
+      "operationType": "release-prepare",
+      "actor": "human-command",
+      "executionLocation": "remote",
+      "executionMode": "copy-and-run",
       "dependsOn": [
-        "deployment.approval"
+        "artifact.upload"
       ],
-      "program": "local-operation",
+      "program": "interactive-ssh",
       "arguments": [
-        "source.validate"
+        "STEP_STATUS='failed'",
+        "STEP_EXIT_CODE='1'",
+        "DEPLOYMENT_RUN_ID='example-run'",
+        "ARTIFACT_ID='runtime-artifact-example'",
+        "REMOTE_ROOT=/var/www/example",
+        "RELEASE_ROOT=/var/www/example/.deployment/releases",
+        "REMOTE_RELEASE_DIRECTORY=/var/www/example/.deployment/releases/example-run/runtime-artifact-example",
+        "if [ -e \"$REMOTE_RELEASE_DIRECTORY\" ]; then STEP_STATUS='failed'; STEP_EXIT_CODE=1; else mkdir -p -- \"$REMOTE_RELEASE_DIRECTORY\" && STEP_STATUS='WaitingForHuman' && STEP_EXIT_CODE=0; fi",
+        "printf 'Status=%s\\n' \"$STEP_STATUS\"",
+        "printf 'ExitCode=%s\\n' \"$STEP_EXIT_CODE\""
       ],
       "workingDirectory": "",
       "environment": {},
       "operation": {
-        "sourcePath": "examples/e2e/source"
+        "deploymentRunId": "example-run",
+        "artifactId": "runtime-artifact-example",
+        "remoteRoot": "/var/www/example",
+        "releaseRoot": "/var/www/example/.deployment/releases",
+        "remoteReleaseDirectory": "/var/www/example/.deployment/releases/example-run/runtime-artifact-example",
+        "executionPlanFingerprint": "example-execution-plan-fingerprint"
       },
-      "renderedCommand": "",
+      "renderedCommand": "STEP_STATUS='failed'\nSTEP_EXIT_CODE='1'\nDEPLOYMENT_RUN_ID='example-run'\nARTIFACT_ID='runtime-artifact-example'\nREMOTE_ROOT=/var/www/example\nRELEASE_ROOT=/var/www/example/.deployment/releases\nREMOTE_RELEASE_DIRECTORY=/var/www/example/.deployment/releases/example-run/runtime-artifact-example\nif [ -e \"$REMOTE_RELEASE_DIRECTORY\" ]; then STEP_STATUS='failed'; STEP_EXIT_CODE=1; else mkdir -p -- \"$REMOTE_RELEASE_DIRECTORY\" && STEP_STATUS='WaitingForHuman' && STEP_EXIT_CODE=0; fi\nprintf 'Status=%s\\n' \"$STEP_STATUS\"\nprintf 'ExitCode=%s\\n' \"$STEP_EXIT_CODE\"",
       "display": {
-        "title": "post.approval.source.validate",
-        "description": "",
-        "copyable": false
+        "title": "Remote Release-Verzeichnis vorbereiten",
+        "description": "Copyable remote command block for an already opened interactive SSH session.",
+        "copyable": true
       },
       "feedback": {
-        "required": false,
-        "expectedData": []
+        "required": true,
+        "expectedData": [
+          "exitStatus",
+          "stdout",
+          "stderr"
+        ]
+      },
+      "safety": {
+        "destructive": false,
+        "containsSecret": false,
+        "requiresApproval": false,
+        "executionPermitted": false
+      },
+      "diagnostic": ""
+    },
+    {
+      "commandId": "remote.archive.extract",
+      "sequence": 700,
+      "strategyStepId": "remote.archive.extract",
+      "operationType": "archive-extract",
+      "actor": "human-command",
+      "executionLocation": "remote",
+      "executionMode": "copy-and-run",
+      "dependsOn": [
+        "remote.release.prepare"
+      ],
+      "program": "interactive-ssh",
+      "arguments": [
+        "test -d /var/www/example/.deployment/releases/example-run/runtime-artifact-example",
+        "unzip -q /var/www/example/.deployment/uploads/deployment.zip -d /var/www/example/.deployment/releases/example-run/runtime-artifact-example"
+      ],
+      "workingDirectory": "",
+      "environment": {},
+      "operation": {},
+      "renderedCommand": "test -d /var/www/example/.deployment/releases/example-run/runtime-artifact-example\nunzip -q /var/www/example/.deployment/uploads/deployment.zip -d /var/www/example/.deployment/releases/example-run/runtime-artifact-example",
+      "display": {
+        "title": "Remote Archiv entpacken und validieren",
+        "description": "Copyable remote command block for an already opened interactive SSH session.",
+        "copyable": true
+      },
+      "feedback": {
+        "required": true,
+        "expectedData": [
+          "exitStatus",
+          "stdout",
+          "stderr"
+        ]
+      },
+      "safety": {
+        "destructive": false,
+        "containsSecret": false,
+        "requiresApproval": false,
+        "executionPermitted": false
+      },
+      "diagnostic": ""
+    },
+    {
+      "commandId": "remote.composer.preflight",
+      "sequence": 750,
+      "strategyStepId": "remote.composer.preflight",
+      "operationType": "composer-preflight",
+      "actor": "human-command",
+      "executionLocation": "remote",
+      "executionMode": "copy-and-run",
+      "dependsOn": [
+        "remote.archive.extract"
+      ],
+      "program": "interactive-ssh",
+      "arguments": [
+        "STEP_STATUS='failed'",
+        "STEP_EXIT_CODE='1'",
+        "REMOTE_RELEASE_DIRECTORY=/var/www/example/.deployment/releases/example-run/runtime-artifact-example",
+        "COMPOSER_STRATEGY_ID=composer-strategy-laravel-staging-install-from-lock",
+        "COMPOSER_STRATEGY_FINGERPRINT=example-composer-strategy-fingerprint",
+        "if [ ! -f \"$REMOTE_RELEASE_DIRECTORY/composer.json\" ]; then FAILURE_REASON='composer-json-missing'; elif [ ! -f \"$REMOTE_RELEASE_DIRECTORY/composer.lock\" ]; then FAILURE_REASON='composer-lock-missing'; elif [ -e \"$REMOTE_RELEASE_DIRECTORY/vendor\" ]; then FAILURE_REASON='vendor-already-present'; elif ! command -v composer >/dev/null 2>&1; then FAILURE_REASON='composer-not-found'; elif ! command -v php >/dev/null 2>&1; then FAILURE_REASON='php-not-found'; else STEP_EXIT_CODE=0; fi",
+        "if [ \"$STEP_EXIT_CODE\" = \"0\" ]; then cd \"$REMOTE_RELEASE_DIRECTORY\" && composer validate --no-check-publish --no-interaction >/dev/null 2>&1; STEP_EXIT_CODE=$?; fi",
+        "if [ \"$STEP_EXIT_CODE\" = \"0\" ]; then cd \"$REMOTE_RELEASE_DIRECTORY\" && composer check-platform-reqs --lock --no-interaction >/dev/null 2>&1; STEP_EXIT_CODE=$?; fi",
+        "if [ \"$STEP_EXIT_CODE\" = \"0\" ]; then STEP_STATUS='WaitingForHuman'; fi",
+        "printf 'ComposerStrategyId=%s\\n' \"$COMPOSER_STRATEGY_ID\"",
+        "printf 'ComposerStrategyFingerprint=%s\\n' \"$COMPOSER_STRATEGY_FINGERPRINT\"",
+        "printf 'Status=%s\\n' \"$STEP_STATUS\"",
+        "printf 'ExitCode=%s\\n' \"$STEP_EXIT_CODE\"",
+        "printf 'CurrentStep=%s\\n' remote.composer.preflight",
+        "printf 'NextStep=%s\\n' remote.composer.install"
+      ],
+      "workingDirectory": "",
+      "environment": {},
+      "operation": {
+        "composerStrategyId": "composer-strategy-laravel-staging-install-from-lock",
+        "composerStrategyFingerprint": "example-composer-strategy-fingerprint",
+        "executionPlanFingerprint": "example-execution-plan-fingerprint",
+        "packagingPolicyRequired": true,
+        "installAllowed": false
+      },
+      "renderedCommand": "STEP_STATUS='failed'\nSTEP_EXIT_CODE='1'\nREMOTE_RELEASE_DIRECTORY=/var/www/example/.deployment/releases/example-run/runtime-artifact-example\nCOMPOSER_STRATEGY_ID=composer-strategy-laravel-staging-install-from-lock\nCOMPOSER_STRATEGY_FINGERPRINT=example-composer-strategy-fingerprint\nif [ ! -f \"$REMOTE_RELEASE_DIRECTORY/composer.json\" ]; then FAILURE_REASON='composer-json-missing'; elif [ ! -f \"$REMOTE_RELEASE_DIRECTORY/composer.lock\" ]; then FAILURE_REASON='composer-lock-missing'; elif [ -e \"$REMOTE_RELEASE_DIRECTORY/vendor\" ]; then FAILURE_REASON='vendor-already-present'; elif ! command -v composer >/dev/null 2>&1; then FAILURE_REASON='composer-not-found'; elif ! command -v php >/dev/null 2>&1; then FAILURE_REASON='php-not-found'; else STEP_EXIT_CODE=0; fi\nif [ \"$STEP_EXIT_CODE\" = \"0\" ]; then cd \"$REMOTE_RELEASE_DIRECTORY\" && composer validate --no-check-publish --no-interaction >/dev/null 2>&1; STEP_EXIT_CODE=$?; fi\nif [ \"$STEP_EXIT_CODE\" = \"0\" ]; then cd \"$REMOTE_RELEASE_DIRECTORY\" && composer check-platform-reqs --lock --no-interaction >/dev/null 2>&1; STEP_EXIT_CODE=$?; fi\nif [ \"$STEP_EXIT_CODE\" = \"0\" ]; then STEP_STATUS='WaitingForHuman'; fi\nprintf 'ComposerStrategyId=%s\\n' \"$COMPOSER_STRATEGY_ID\"\nprintf 'ComposerStrategyFingerprint=%s\\n' \"$COMPOSER_STRATEGY_FINGERPRINT\"\nprintf 'Status=%s\\n' \"$STEP_STATUS\"\nprintf 'ExitCode=%s\\n' \"$STEP_EXIT_CODE\"\nprintf 'CurrentStep=%s\\n' remote.composer.preflight\nprintf 'NextStep=%s\\n' remote.composer.install",
+      "display": {
+        "title": "Remote Composer-Preflight pruefen",
+        "description": "Read-only Composer preflight block for an already opened interactive SSH session.",
+        "copyable": true
+      },
+      "feedback": {
+        "required": true,
+        "expectedData": [
+          "exitStatus",
+          "stdout",
+          "stderr"
+        ]
+      },
+      "safety": {
+        "destructive": false,
+        "containsSecret": false,
+        "requiresApproval": false,
+        "executionPermitted": false
+      },
+      "diagnostic": ""
+    },
+    {
+      "commandId": "remote.composer.install",
+      "sequence": 775,
+      "strategyStepId": "remote.composer.install",
+      "operationType": "composer-install",
+      "actor": "human-command",
+      "executionLocation": "remote",
+      "executionMode": "copy-and-run",
+      "dependsOn": [
+        "remote.composer.preflight"
+      ],
+      "program": "interactive-ssh",
+      "arguments": [
+        "STEP_STATUS='WaitingForHuman'",
+        "STEP_EXIT_CODE='0'",
+        "printf 'Status=%s\\n' \"$STEP_STATUS\"",
+        "printf 'ExitCode=%s\\n' \"$STEP_EXIT_CODE\"",
+        "printf 'CurrentStep=%s\\n' remote.composer.install",
+        "printf 'BlockedReason=%s\\n' requires-successful-remote.composer.preflight-and-explicit-approval"
+      ],
+      "workingDirectory": "",
+      "environment": {},
+      "operation": {
+        "installMode": "install-from-lock",
+        "productionMode": true,
+        "installAllowedWithoutSuccessfulPreflight": false
+      },
+      "renderedCommand": "STEP_STATUS='WaitingForHuman'\nSTEP_EXIT_CODE='0'\nprintf 'Status=%s\\n' \"$STEP_STATUS\"\nprintf 'ExitCode=%s\\n' \"$STEP_EXIT_CODE\"\nprintf 'CurrentStep=%s\\n' remote.composer.install\nprintf 'BlockedReason=%s\\n' requires-successful-remote.composer.preflight-and-explicit-approval",
+      "display": {
+        "title": "Remote Composer-Installation blockiert",
+        "description": "Gate placeholder; does not run composer install.",
+        "copyable": true
+      },
+      "feedback": {
+        "required": true,
+        "expectedData": [
+          "exitStatus",
+          "stdout",
+          "stderr"
+        ]
       },
       "safety": {
         "destructive": false,
@@ -128,7 +307,7 @@
     {
       "gateId": "deployment.approval",
       "stepId": "deployment.approval",
-      "sequence": 300,
+      "sequence": 400,
       "dependsOn": [
         "archive.create"
       ],
@@ -140,5 +319,5 @@
       ]
     }
   ],
-  "diagnostic": ""
+  "diagnostic": "Example command plan showing separated artifact transport, release prepare, extract and Composer preflight."
 }

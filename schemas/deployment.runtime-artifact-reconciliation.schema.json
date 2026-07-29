@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/Kighlander1975/deployment-engine/main/schemas/deployment.runtime-artifact-reconciliation.schema.json",
+  "title": "SHK-MOMM Runtime Artifact Reconciliation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "reconciliationType",
+    "deploymentRunId",
+    "projectId",
+    "previousRuntimeArtifactId",
+    "replacementRuntimeArtifactId",
+    "reason",
+    "previousArtifactStatus",
+    "replacementArtifactStatus",
+    "activeRuntimeArtifactId",
+    "executionPlanFingerprint",
+    "previousPackagingPolicyId",
+    "replacementPackagingPolicyId",
+    "replacementPackagingPolicyFingerprint",
+    "reconciledAt",
+    "reconciledBy",
+    "stateTransition",
+    "artifactStates",
+    "blockedArtifactReferences",
+    "uploadPreview",
+    "remoteValidationFlow",
+    "persistentDataNotice"
+  ],
+  "properties": {
+    "schemaVersion": { "type": "string", "const": "0.1" },
+    "reconciliationType": { "type": "string", "const": "runtime-artifact-reconciliation" },
+    "deploymentRunId": { "type": "string", "minLength": 1 },
+    "projectId": { "type": "string", "minLength": 1 },
+    "previousRuntimeArtifactId": { "type": "string", "minLength": 1 },
+    "replacementRuntimeArtifactId": { "type": "string", "minLength": 1 },
+    "reason": { "type": "string", "const": "packaging-policy-correction" },
+    "previousArtifactStatus": { "type": "string", "const": "superseded" },
+    "replacementArtifactStatus": { "type": "string", "const": "active-candidate" },
+    "activeRuntimeArtifactId": { "type": "string", "minLength": 1 },
+    "executionPlanFingerprint": { "type": "string", "minLength": 1 },
+    "previousPackagingPolicyId": { "type": "string" },
+    "replacementPackagingPolicyId": { "type": "string", "minLength": 1 },
+    "replacementPackagingPolicyFingerprint": {
+      "type": "string",
+      "pattern": "^[A-Fa-f0-9]{64}$"
+    },
+    "reconciledAt": { "type": "string", "minLength": 1 },
+    "reconciledBy": { "type": "string", "minLength": 1 },
+    "stateTransition": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["from", "via", "to", "reason"]
+    },
+    "artifactStates": {
+      "type": "array",
+      "minItems": 2,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["artifactId", "status", "uploaded", "eligibleForExtract", "deleteAutomatically"],
+        "properties": {
+          "artifactId": { "type": "string", "minLength": 1 },
+          "status": { "type": "string", "enum": ["superseded", "active-candidate"] },
+          "uploaded": { "type": "boolean" },
+          "eligibleForExtract": { "type": "boolean" },
+          "deleteAutomatically": { "type": "boolean" }
+        }
+      }
+    },
+    "blockedArtifactReferences": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["stepId", "forbiddenRuntimeArtifactId"],
+        "properties": {
+          "stepId": { "type": "string", "minLength": 1 },
+          "forbiddenRuntimeArtifactId": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "uploadPreview": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "deploymentRunId",
+        "source",
+        "temporaryDestination",
+        "finalDestination",
+        "remoteTemporaryDestination",
+        "remoteFinalDestination",
+        "artifactId",
+        "expectedSize",
+        "expectedSha256",
+        "executionPlanFingerprint",
+        "packagingPolicyId",
+        "packagingPolicyFingerprint",
+        "currentStep",
+        "nextStep",
+        "status"
+      ],
+      "properties": {
+        "deploymentRunId": { "type": "string", "minLength": 1 },
+        "source": { "type": "string", "minLength": 1 },
+        "temporaryDestination": { "type": "string", "minLength": 1 },
+        "finalDestination": { "type": "string", "minLength": 1 },
+        "remoteTemporaryDestination": { "type": "string", "minLength": 1 },
+        "remoteFinalDestination": { "type": "string", "minLength": 1 },
+        "artifactId": { "type": "string", "minLength": 1 },
+        "expectedSize": { "type": "integer", "minimum": 0 },
+        "expectedSha256": { "type": "string", "pattern": "^[A-Fa-f0-9]{64}$" },
+        "executionPlanFingerprint": { "type": "string", "minLength": 1 },
+        "packagingPolicyId": { "type": "string", "minLength": 1 },
+        "packagingPolicyFingerprint": { "type": "string", "pattern": "^[A-Fa-f0-9]{64}$" },
+        "currentStep": { "type": "string", "const": "artifact.upload" },
+        "nextStep": { "type": "string", "const": "remote.artifact.validate" },
+        "status": { "type": "string", "const": "WaitingForHuman" }
+      }
+    },
+    "remoteValidationFlow": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "persistentDataNotice": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["path", "classification", "includedInDeploymentArtifact", "openArchitectureSteps"]
+    }
+  }
+}

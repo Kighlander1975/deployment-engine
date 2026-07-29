@@ -6,6 +6,8 @@ param(
     [Parameter(Mandatory = $true)]
     [string] $ProjectManifestPath,
 
+    [string] $TargetPath,
+
     [ValidateSet('Text', 'Json')]
     [string] $Format = 'Text',
 
@@ -19,6 +21,36 @@ $executionPlanSchemaVersion = '0.1'
 $supportedAnalysisVersions = @('0.1')
 
 . (Join-Path -Path $PSScriptRoot -ChildPath 'Resolve-DeploymentCapabilities.ps1')
+
+function Get-ExecutionPlanFingerprint {
+    param([Parameter(Mandatory = $true)][object] $Plan)
+
+    $copy = $Plan | ConvertTo-Json -Depth 60 | ConvertFrom-Json
+    if (Test-PropertyValue -Object $copy -Name 'executionPlanFingerprint') {
+        $copy.PSObject.Properties.Remove('executionPlanFingerprint')
+    }
+
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes(($copy | ConvertTo-Json -Depth 60 -Compress))
+    $hash = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        return ([System.BitConverter]::ToString($hash.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant()
+    } finally {
+        $hash.Dispose()
+    }
+}
+
+function Add-ExecutionPlanFingerprint {
+    param([Parameter(Mandatory = $true)][object] $Plan)
+
+    $fingerprint = Get-ExecutionPlanFingerprint -Plan $Plan
+    if (Test-PropertyValue -Object $Plan -Name 'executionPlanFingerprint') {
+        $Plan.executionPlanFingerprint = $fingerprint
+    } else {
+        Add-Member -InputObject $Plan -MemberType NoteProperty -Name 'executionPlanFingerprint' -Value $fingerprint
+    }
+
+    return $Plan
+}
 
 function Resolve-LocalPath {
     param(
@@ -161,10 +193,301 @@ function Join-DeploymentPath {
     return "$normalizedRoot/$normalizedChild"
 }
 
-function Get-ApplicationRemoteDirectory {
-    param([Parameter(Mandatory = $true)][object] $Manifest)
+function Test-AbsolutePosixPath {
+    param([string] $Path)
 
-    return Join-DeploymentPath -Root ([string] $Manifest.deployment.serverRoot) -Child ([string] $Manifest.project.applicationRoot)
+    return (-not [string]::IsNullOrWhiteSpace($Path) -and $Path.StartsWith('/') -and -not ($Path -match '\\') -and -not ($Path -match '//'))
+}
+
+function Get-PosixPathSegments {
+    param([Parameter(Mandatory = $true)][string] $Path)
+
+    return @($Path.Split('/') | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+}
+
+function Assert-RelativePosixPath {
+    param(
+        [string] $Path,
+        [Parameter(Mandatory = $true)][string] $Context
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        throw "$Context validation failed: path must not be empty."
+    }
+    $normalized = $Path -replace '\\', '/'
+    if ($normalized.StartsWith('/')) {
+        throw "$Context validation failed: path must be relative."
+    }
+    if ($normalized -match '//') {
+        throw "$Context validation failed: path must not contain empty segments."
+    }
+    foreach ($segment in (Get-PosixPathSegments -Path $normalized)) {
+        if ($segment -eq '.' -or $segment -eq '..') {
+            throw "$Context validation failed: path must not contain '.' or '..' segments."
+        }
+    }
+}
+
+function Normalize-RelativePosixPath {
+    param(
+        [Parameter(Mandatory = $true)][string] $Path,
+        [Parameter(Mandatory = $true)][string] $Context
+    )
+
+    Assert-RelativePosixPath -Path $Path -Context $Context
+    return (($Path -replace '\\', '/').Trim('/'))
+}
+
+function Test-RemotePathInside {
+    param(
+        [Parameter(Mandatory = $true)][string] $Path,
+        [Parameter(Mandatory = $true)][string] $Root
+    )
+
+    $normalizedPath = ($Path -replace '\\', '/').TrimEnd('/')
+    $normalizedRoot = ($Root -replace '\\', '/').TrimEnd('/')
+    return ($normalizedPath -eq $normalizedRoot -or $normalizedPath.StartsWith("$normalizedRoot/"))
+}
+
+function Test-RelativePathOverlaps {
+    param(
+        [Parameter(Mandatory = $true)][string] $Left,
+        [Parameter(Mandatory = $true)][string] $Right
+    )
+
+    $normalizedLeft = $Left.Trim('/')
+    $normalizedRight = $Right.Trim('/')
+    return ($normalizedLeft -eq $normalizedRight -or $normalizedLeft.StartsWith("$normalizedRight/") -or $normalizedRight.StartsWith("$normalizedLeft/"))
+}
+
+function Normalize-AbsoluteRemoteRoot {
+    param(
+        [string] $Path,
+        [Parameter(Mandatory = $true)][string] $Context
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        throw "$Context validation failed: remoteRoot must not be empty."
+    }
+    $normalized = ($Path -replace '\\', '/').TrimEnd('/')
+    if (-not (Test-AbsolutePosixPath -Path $normalized)) {
+        throw "$Context validation failed: remoteRoot must be an absolute POSIX path."
+    }
+    foreach ($segment in (Get-PosixPathSegments -Path $normalized)) {
+        if ($segment -eq '.' -or $segment -eq '..') {
+            throw "$Context validation failed: remoteRoot must not contain '.' or '..' segments."
+        }
+    }
+    return $normalized
+}
+
+function Resolve-SharedStorageContract {
+    param(
+        [Parameter(Mandatory = $true)][object] $Manifest,
+        [Parameter(Mandatory = $true)][object] $RemoteTarget
+    )
+
+    if (-not (Test-PropertyValue -Object $Manifest -Name 'sharedStorage')) {
+        return [pscustomobject]@{
+            configurationPresent = $false
+            rootResolved = $false
+            root = ''
+            sharedRootAbsolutePath = ''
+            directories = @()
+            files = @()
+            diagnostics = @('shared-storage-configuration-missing')
+        }
+    }
+
+    $contract = $Manifest.sharedStorage
+    Assert-RequiredValue -Object $contract -Path 'root' -SourceName 'Shared storage'
+    if (-not (Test-PropertyValue -Object $contract -Name 'directories') -or $null -eq $contract.directories) {
+        throw "Shared storage validation failed: missing required field 'directories'."
+    }
+    if (-not (Test-PropertyValue -Object $contract -Name 'files') -or $null -eq $contract.files) {
+        throw "Shared storage validation failed: missing required field 'files'."
+    }
+
+    $applicationRemoteDirectory = [string] $RemoteTarget.applicationRemoteDirectory
+    $workspaceRoots = @('.deployment', '.deployment/uploads', '.deployment/work', '.deployment/releases', '.deployment/metadata')
+    $root = Normalize-RelativePosixPath -Path ([string] $contract.root) -Context 'Shared storage root'
+    foreach ($workspaceRoot in $workspaceRoots) {
+        if (Test-RelativePathOverlaps -Left $root -Right $workspaceRoot) {
+            throw "Shared storage validation failed: root must not overlap deployment workspace path '$workspaceRoot'."
+        }
+    }
+
+    $sharedRootAbsolutePath = Join-DeploymentPath -Root $applicationRemoteDirectory -Child $root
+    if (-not (Test-RemotePathInside -Path $sharedRootAbsolutePath -Root $applicationRemoteDirectory)) {
+        throw 'Shared storage validation failed: resolved root escapes applicationRemoteDirectory.'
+    }
+
+    $releaseLinks = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::Ordinal)
+    $sharedTargets = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::Ordinal)
+    $releaseLinkList = New-Object System.Collections.Generic.List[string]
+    $sharedTargetList = New-Object System.Collections.Generic.List[string]
+    $entries = New-Object System.Collections.Generic.List[object]
+
+    foreach ($collectionInfo in @(
+        [pscustomobject]@{ value = $contract.directories; expectedKind = 'directory'; label = 'directories' },
+        [pscustomobject]@{ value = $contract.files; expectedKind = 'file'; label = 'files' }
+    )) {
+        foreach ($entry in @($collectionInfo.value)) {
+            if ($null -eq $entry) {
+                throw "Shared storage validation failed: entry in '$($collectionInfo.label)' must not be null."
+            }
+            foreach ($field in @('sharedPath', 'releaseLinkPath', 'pathKind', 'conflictPolicy', 'initializationPolicy')) {
+                Assert-RequiredValue -Object $entry -Path $field -SourceName 'Shared storage entry'
+            }
+
+            $pathKind = [string] $entry.pathKind
+            if ($pathKind -notin @('directory', 'file')) {
+                throw "Shared storage validation failed: unsupported pathKind '$pathKind'."
+            }
+            if ($pathKind -ne [string] $collectionInfo.expectedKind) {
+                throw "Shared storage validation failed: entry in '$($collectionInfo.label)' must use pathKind '$($collectionInfo.expectedKind)'."
+            }
+            if ([string] $entry.conflictPolicy -ne 'fail') {
+                throw "Shared storage validation failed: unsupported conflictPolicy '$($entry.conflictPolicy)'."
+            }
+            if ([string] $entry.initializationPolicy -ne 'explicit') {
+                throw "Shared storage validation failed: unsupported initializationPolicy '$($entry.initializationPolicy)'."
+            }
+
+            $sharedPath = Normalize-RelativePosixPath -Path ([string] $entry.sharedPath) -Context 'Shared storage sharedPath'
+            $releaseLinkPath = Normalize-RelativePosixPath -Path ([string] $entry.releaseLinkPath) -Context 'Shared storage releaseLinkPath'
+            foreach ($workspaceRoot in $workspaceRoots) {
+                if ((Test-RelativePathOverlaps -Left $releaseLinkPath -Right $workspaceRoot) -or (Test-RelativePathOverlaps -Left $sharedPath -Right $workspaceRoot)) {
+                    throw "Shared storage validation failed: shared entry must not overlap deployment workspace path '$workspaceRoot'."
+                }
+            }
+            if (-not $releaseLinks.Add($releaseLinkPath)) {
+                throw "Shared storage validation failed: duplicate releaseLinkPath '$releaseLinkPath'."
+            }
+            if (-not $sharedTargets.Add($sharedPath)) {
+                throw "Shared storage validation failed: duplicate sharedPath '$sharedPath'."
+            }
+            foreach ($existingReleaseLink in @($releaseLinkList)) {
+                if (Test-RelativePathOverlaps -Left $releaseLinkPath -Right $existingReleaseLink) {
+                    throw "Shared storage validation failed: overlapping releaseLinkPath '$releaseLinkPath'."
+                }
+            }
+            foreach ($existingSharedTarget in @($sharedTargetList)) {
+                if (Test-RelativePathOverlaps -Left $sharedPath -Right $existingSharedTarget) {
+                    throw "Shared storage validation failed: overlapping sharedPath '$sharedPath'."
+                }
+            }
+            $releaseLinkList.Add($releaseLinkPath)
+            $sharedTargetList.Add($sharedPath)
+
+            $sharedAbsolutePath = Join-DeploymentPath -Root $sharedRootAbsolutePath -Child $sharedPath
+            $releaseLinkAbsolutePath = Join-DeploymentPath -Root ([string] $RemoteTarget.applicationRemoteDirectory) -Child $releaseLinkPath
+            if (-not (Test-RemotePathInside -Path $sharedAbsolutePath -Root $sharedRootAbsolutePath)) {
+                throw "Shared storage validation failed: shared target '$sharedPath' escapes shared root."
+            }
+            if (-not (Test-RemotePathInside -Path $releaseLinkAbsolutePath -Root ([string] $RemoteTarget.applicationRemoteDirectory)) -or (Test-RemotePathInside -Path $releaseLinkAbsolutePath -Root $sharedRootAbsolutePath)) {
+                throw "Shared storage validation failed: release link '$releaseLinkPath' must stay inside the release directory and outside shared root."
+            }
+            if ($sharedAbsolutePath.TrimEnd('/') -eq $releaseLinkAbsolutePath.TrimEnd('/')) {
+                throw "Shared storage validation failed: shared target and release link must not resolve to the same path."
+            }
+
+            $entries.Add([pscustomobject]@{
+                sharedPath = $sharedPath
+                releaseLinkPath = $releaseLinkPath
+                pathKind = $pathKind
+                conflictPolicy = [string] $entry.conflictPolicy
+                initializationPolicy = [string] $entry.initializationPolicy
+                sharedRootRelativePath = $root
+                sharedRootAbsolutePath = $sharedRootAbsolutePath
+                sharedAbsolutePath = $sharedAbsolutePath
+                releaseLinkAbsolutePath = $releaseLinkAbsolutePath
+                writeBoundary = [pscustomobject]@{
+                    allowedWriteTargets = @('shared-target-directory', 'missing-parents-inside-shared-root', 'release-link-path')
+                    forbiddenTargets = @('existing-shared-data', 'other-shared-paths', 'other-release-paths', 'current-link', 'composer-files', 'database', 'configuration', 'secrets')
+                }
+            })
+        }
+    }
+
+    if ($entries.Count -eq 0) {
+        throw 'Shared storage validation failed: root requires at least one concrete shared entry.'
+    }
+
+    return [pscustomobject]@{
+        configurationPresent = $true
+        rootResolved = $true
+        root = $root
+        sharedRootAbsolutePath = $sharedRootAbsolutePath
+        directories = @($entries | Where-Object { $_.pathKind -eq 'directory' })
+        files = @($entries | Where-Object { $_.pathKind -eq 'file' })
+        diagnostics = @()
+    }
+}
+
+function Read-DeploymentTarget {
+    param([string] $Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        throw "Target configuration validation failed: -TargetPath is required for remote target resolution."
+    }
+
+    $targetResult = Read-JsonFile -Path $Path
+    $target = $targetResult.value
+
+    foreach ($requiredPath in @('schemaVersion', 'targetId', 'remoteRoot', 'applicationPath')) {
+        Assert-RequiredValue -Object $target -Path $requiredPath -SourceName 'Target configuration'
+    }
+    if ($target.schemaVersion -ne '0.1') {
+        throw "Target configuration validation failed: unsupported schemaVersion '$($target.schemaVersion)'."
+    }
+    $allowedFields = @('$schema', 'schemaVersion', 'targetId', 'remoteRoot', 'applicationPath')
+    foreach ($property in @($target.PSObject.Properties)) {
+        if ($property.Name -notin $allowedFields) {
+            throw "Target configuration validation failed: field '$($property.Name)' is not allowed."
+        }
+    }
+    foreach ($forbiddenField in @('host', 'hostname', 'user', 'username', 'password', 'token', 'secret')) {
+        if (Test-PropertyValue -Object $target -Name $forbiddenField) {
+            throw "Target configuration validation failed: field '$forbiddenField' is not allowed."
+        }
+    }
+
+    return [pscustomobject]@{
+        path = $targetResult.path
+        value = $target
+    }
+}
+
+function Resolve-RemoteTarget {
+    param(
+        [Parameter(Mandatory = $true)][object] $Manifest,
+        [Parameter(Mandatory = $true)][object] $TargetConfiguration
+    )
+
+    $target = $TargetConfiguration.value
+    $remoteRoot = Normalize-AbsoluteRemoteRoot -Path ([string] $target.remoteRoot) -Context 'Target configuration'
+    $applicationPath = [string] $target.applicationPath
+    Assert-RelativePosixPath -Path $applicationPath -Context 'Target configuration applicationPath'
+
+    $applicationRemoteDirectory = Join-DeploymentPath -Root $remoteRoot -Child $applicationPath
+    if (-not (Test-AbsolutePosixPath -Path $applicationRemoteDirectory)) {
+        throw "Remote target resolution failed: applicationRemoteDirectory must be an absolute POSIX path."
+    }
+    if (-not ($applicationRemoteDirectory -eq $remoteRoot -or $applicationRemoteDirectory.StartsWith("$remoteRoot/"))) {
+        throw "Remote target resolution failed: normalized application path escapes remoteRoot."
+    }
+
+    return [pscustomobject]@{
+        schemaVersion = '0.1'
+        targetId = [string] $target.targetId
+        targetConfigurationPath = [string] $TargetConfiguration.path
+        logicalServerRoot = [string] $Manifest.deployment.serverRoot
+        remoteRoot = $remoteRoot
+        applicationPath = $applicationPath
+        applicationRemoteDirectory = $applicationRemoteDirectory
+        resolution = 'remoteRoot-plus-applicationPath'
+    }
 }
 
 function New-ValidationRule {
@@ -255,6 +578,7 @@ function New-ExecutionPlanStep {
 function New-CapabilityInstructions {
     param(
         [Parameter(Mandatory = $true)][object] $Manifest,
+        [Parameter(Mandatory = $true)][object] $RemoteTarget,
         [Parameter(Mandatory = $true)][string] $CapabilityId,
         [string] $Purpose,
         [string] $ExpectedOutcome,
@@ -263,7 +587,7 @@ function New-CapabilityInstructions {
     )
 
     if ([string]::IsNullOrWhiteSpace($WorkingDirectory)) {
-        $WorkingDirectory = Get-ApplicationRemoteDirectory -Manifest $Manifest
+        $WorkingDirectory = [string] $RemoteTarget.applicationRemoteDirectory
     }
 
     return [pscustomobject]@{
@@ -398,7 +722,8 @@ function Assert-ManifestShape {
 function New-ExecutionPlanContext {
     param(
         [Parameter(Mandatory = $true)][object] $Analysis,
-        [Parameter(Mandatory = $true)][object] $Manifest
+        [Parameter(Mandatory = $true)][object] $Manifest,
+        [Parameter(Mandatory = $true)][object] $RemoteTarget
     )
 
     $environmentChanges = if (Test-PropertyValue -Object $Analysis -Name 'environmentChanges') { $Analysis.environmentChanges } else { [pscustomobject]@{} }
@@ -422,7 +747,9 @@ function New-ExecutionPlanContext {
         seederReviewRequired = if (Test-PropertyValue -Object $Analysis.decisions -Name 'seederReviewRequired') { [bool] $Analysis.decisions.seederReviewRequired } else { [bool] $seederReview.changed }
         baselineCommit = if (Test-PropertyValue -Object $Analysis -Name 'baselineCommit') { [string] $Analysis.baselineCommit } else { '' }
         targetCommit = if (Test-PropertyValue -Object $Analysis -Name 'targetCommit') { [string] $Analysis.targetCommit } else { '' }
-        applicationRemoteDirectory = Get-ApplicationRemoteDirectory -Manifest $Manifest
+        remoteTarget = $RemoteTarget
+        applicationRemoteDirectory = [string] $RemoteTarget.applicationRemoteDirectory
+        sharedStorage = (Resolve-SharedStorageContract -Manifest $Manifest -RemoteTarget $RemoteTarget)
         runtimeDeletions = @(Get-DeletedRuntimePaths -Analysis $Analysis)
         protectedPaths = @(Get-ProtectedPaths -Analysis $Analysis)
         migrationPaths = @(Get-MigrationPaths -Analysis $Analysis)
@@ -652,7 +979,7 @@ function BuildComposerPlan {
     param([Parameter(Mandatory = $true)][object] $Context)
 
     if ($Context.decisions.composerInstallRequired) {
-        $instructions = New-CapabilityInstructions -Manifest $Context.manifest -CapabilityId 'composer.install.production' -Purpose 'PHP-Abhaengigkeiten auf der Zielumgebung installieren.' -ExpectedOutcome 'Composer installiert die benoetigten produktiven Abhaengigkeiten ohne Fehler.'
+        $instructions = New-CapabilityInstructions -Manifest $Context.manifest -RemoteTarget $Context.remoteTarget -CapabilityId 'composer.install.production' -Purpose 'PHP-Abhaengigkeiten auf der Zielumgebung installieren.' -ExpectedOutcome 'Composer installiert die benoetigten produktiven Abhaengigkeiten ohne Fehler.'
         $status = if (Test-CommandReady -Instructions $instructions) { Get-BlockedOrWaitingStatus -BlockingDependencies $Context.gateIds.ToArray() -WaitingStatus 'waiting-for-human' } else { 'blocked' }
         Add-ExecutionPlanStep -Context $Context -BlocksFollowingSteps $true -Step (New-ExecutionPlanStep `
             -Id 'remote.dependencies.composer-install' `
@@ -699,7 +1026,7 @@ function BuildMigrationPlan {
         -Validation (New-ValidationRule -RequiredResponse 'Explizite High-Risk-Freigabe mit Backup-Bestaetigung.') `
         -Continuation (New-ContinuationRule -blocksAutomaticContinuation $true -requiredUserAction 'Der Prozess wartet auf Migrationsfreigabe und Backup-Bestaetigung.'))
 
-    $statusInstructions = New-CapabilityInstructions -Manifest $Context.manifest -CapabilityId 'artisan.migrate.status' -Purpose 'Pruefen, welche Migrationen auf der Zielumgebung offen oder bereits ausgefuehrt sind.' -ExpectedOutcome 'Laravel gibt den Status der Migrationen ohne Fehler aus.' -RequiredResponse 'Vollstaendige relevante Konsolenausgabe von migrate:status'
+    $statusInstructions = New-CapabilityInstructions -Manifest $Context.manifest -RemoteTarget $Context.remoteTarget -CapabilityId 'artisan.migrate.status' -Purpose 'Pruefen, welche Migrationen auf der Zielumgebung offen oder bereits ausgefuehrt sind.' -ExpectedOutcome 'Laravel gibt den Status der Migrationen ohne Fehler aus.' -RequiredResponse 'Vollstaendige relevante Konsolenausgabe von migrate:status'
     $statusStatus = if (Test-CommandReady -Instructions $statusInstructions) { Get-BlockedOrWaitingStatus -BlockingDependencies $Context.gateIds.ToArray() -WaitingStatus 'waiting-for-human' } else { 'blocked' }
     Add-ExecutionPlanStep -Context $Context -BlocksFollowingSteps $true -Step (New-ExecutionPlanStep `
         -Id 'remote.migrations.status' `
@@ -715,7 +1042,7 @@ function BuildMigrationPlan {
         -Instructions $statusInstructions `
         -Continuation (New-ContinuationRule -blocksAutomaticContinuation $true -requiredUserAction 'Der Prozess wartet auf migrate:status-Ausgabe und Bewertung.'))
 
-    $instructions = New-CapabilityInstructions -Manifest $Context.manifest -CapabilityId 'artisan.migrate' -Purpose 'Ausfuehren der noch offenen Datenbankmigrationen.' -ExpectedOutcome 'Alle offenen Migrationen werden erfolgreich abgeschlossen.'
+    $instructions = New-CapabilityInstructions -Manifest $Context.manifest -RemoteTarget $Context.remoteTarget -CapabilityId 'artisan.migrate' -Purpose 'Ausfuehren der noch offenen Datenbankmigrationen.' -ExpectedOutcome 'Alle offenen Migrationen werden erfolgreich abgeschlossen.'
     $executeStatus = if (Test-CommandReady -Instructions $instructions) { Get-BlockedOrWaitingStatus -BlockingDependencies $Context.gateIds.ToArray() -WaitingStatus 'waiting-for-human' } else { 'blocked' }
     Add-ExecutionPlanStep -Context $Context -BlocksFollowingSteps $true -Step (New-ExecutionPlanStep `
         -Id 'remote.migrations.execute' `
@@ -737,7 +1064,7 @@ function BuildMaintenancePlan {
 
     $maintenanceRequired = $Context.decisions.runtimeDeploymentRequired -and -not $Context.decisions.documentationOnly
     if ($maintenanceRequired) {
-        $instructions = New-CapabilityInstructions -Manifest $Context.manifest -CapabilityId 'artisan.optimize.clear' -Purpose 'Laravel Runtime-Caches nach dem Deployment kontrolliert leeren.' -ExpectedOutcome 'Laravel meldet erfolgreich geleerte Caches.'
+        $instructions = New-CapabilityInstructions -Manifest $Context.manifest -RemoteTarget $Context.remoteTarget -CapabilityId 'artisan.optimize.clear' -Purpose 'Laravel Runtime-Caches nach dem Deployment kontrolliert leeren.' -ExpectedOutcome 'Laravel meldet erfolgreich geleerte Caches.'
         $status = if (Test-CommandReady -Instructions $instructions) { Get-BlockedOrWaitingStatus -BlockingDependencies $Context.gateIds.ToArray() -WaitingStatus 'waiting-for-human' } else { 'blocked' }
         Add-ExecutionPlanStep -Context $Context -BlocksFollowingSteps $true -Step (New-ExecutionPlanStep `
             -Id 'remote.runtime.cache-clear' `
@@ -760,7 +1087,7 @@ function BuildVerificationPlan {
     param([Parameter(Mandatory = $true)][object] $Context)
 
     if ($Context.decisions.runtimeDeploymentRequired -and -not $Context.decisions.documentationOnly) {
-        $instructions = New-CapabilityInstructions -Manifest $Context.manifest -CapabilityId 'artisan.about' -Purpose 'Kontrolle, dass die Laravel-Anwendung auf der Zielumgebung antwortet.' -ExpectedOutcome 'Der Befehl gibt Anwendungs- und Umgebungsinformationen ohne Fehler aus.' -RequiredResponse 'Vollstaendige relevante Verifikationsausgabe'
+        $instructions = New-CapabilityInstructions -Manifest $Context.manifest -RemoteTarget $Context.remoteTarget -CapabilityId 'artisan.about' -Purpose 'Kontrolle, dass die Laravel-Anwendung auf der Zielumgebung antwortet.' -ExpectedOutcome 'Der Befehl gibt Anwendungs- und Umgebungsinformationen ohne Fehler aus.' -RequiredResponse 'Vollstaendige relevante Verifikationsausgabe'
         $status = if (Test-CommandReady -Instructions $instructions) { Get-BlockedOrWaitingStatus -BlockingDependencies $Context.gateIds.ToArray() -WaitingStatus 'waiting-for-human' } else { 'blocked' }
         Add-ExecutionPlanStep -Context $Context -BlocksFollowingSteps $true -Step (New-ExecutionPlanStep `
             -Id 'deployment.verification.remote-about' `
@@ -825,6 +1152,8 @@ function ConvertTo-ExecutionPlanResult {
         serverRoot = [string] $Context.manifest.deployment.serverRoot
         applicationRemoteDirectory = $Context.applicationRemoteDirectory
         markerFile = [string] $Context.manifest.deployment.markerFile
+        remoteTarget = $Context.remoteTarget
+        sharedStorage = $Context.sharedStorage
     }
     $result.baselineCommit = $Context.baselineCommit
     $result.targetCommit = $Context.targetCommit
@@ -854,13 +1183,14 @@ function ConvertTo-ExecutionPlanResult {
 function New-UnresolvedExecutionPlan {
     param(
         [Parameter(Mandatory = $true)][object] $Analysis,
-        [Parameter(Mandatory = $true)][object] $Manifest
+        [Parameter(Mandatory = $true)][object] $Manifest,
+        [Parameter(Mandatory = $true)][object] $RemoteTarget
     )
 
     Assert-AnalysisShape -Analysis $Analysis
     Assert-ManifestShape -Manifest $Manifest
 
-    $context = New-ExecutionPlanContext -Analysis $Analysis -Manifest $Manifest
+    $context = New-ExecutionPlanContext -Analysis $Analysis -Manifest $Manifest -RemoteTarget $RemoteTarget
     BuildPreconditions -Context $context
     BuildEnvironmentReview -Context $context
     BuildFrontendPlan -Context $context
@@ -880,11 +1210,13 @@ function New-UnresolvedExecutionPlan {
 function New-ExecutionPlan {
     param(
         [Parameter(Mandatory = $true)][object] $Analysis,
-        [Parameter(Mandatory = $true)][object] $Manifest
+        [Parameter(Mandatory = $true)][object] $Manifest,
+        [Parameter(Mandatory = $true)][object] $RemoteTarget
     )
 
-    $plan = New-UnresolvedExecutionPlan -Analysis $Analysis -Manifest $Manifest
-    return Resolve-DeploymentCapabilities -Plan $plan
+    $plan = New-UnresolvedExecutionPlan -Analysis $Analysis -Manifest $Manifest -RemoteTarget $RemoteTarget
+    $resolvedPlan = Resolve-DeploymentCapabilities -Plan $plan
+    return Add-ExecutionPlanFingerprint -Plan $resolvedPlan
 }
 
 function Test-ManualStepOutput {
@@ -1010,10 +1342,13 @@ function Write-ExecutionPlanSummary {
 if ($MyInvocation.InvocationName -ne '.') {
     $analysisResult = Read-JsonFile -Path $AnalysisPath
     $manifestResult = Read-JsonFile -Path $ProjectManifestPath
-    $executionPlan = New-ExecutionPlan -Analysis $analysisResult.value -Manifest $manifestResult.value
+    $targetResult = Read-DeploymentTarget -Path $TargetPath
+    $remoteTarget = Resolve-RemoteTarget -Manifest $manifestResult.value -TargetConfiguration $targetResult
+    $requestedOutputPath = $OutputPath
+    $executionPlan = New-ExecutionPlan -Analysis $analysisResult.value -Manifest $manifestResult.value -RemoteTarget $remoteTarget
 
-    if (-not [string]::IsNullOrWhiteSpace($OutputPath)) {
-        $resolvedOutputPath = Resolve-LocalPath -Path $OutputPath
+    if (-not [string]::IsNullOrWhiteSpace($requestedOutputPath)) {
+        $resolvedOutputPath = Resolve-LocalPath -Path $requestedOutputPath
         $outputDirectory = Split-Path -Path $resolvedOutputPath -Parent
         if (-not (Test-Path -LiteralPath $outputDirectory -PathType Container)) {
             throw "Output directory does not exist: $outputDirectory"

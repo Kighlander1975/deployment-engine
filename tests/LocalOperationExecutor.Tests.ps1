@@ -64,6 +64,46 @@ function Get-ZipEntries {
     }
 }
 
+function New-ArchiveOperation {
+    param([Parameter(Mandatory = $true)][string] $SourcePath, [Parameter(Mandatory = $true)][string] $ArtifactPath, [string] $ExecutionPlanFingerprint = 'execution-plan-fingerprint-a')
+    return [pscustomobject]@{
+        sourcePath = $SourcePath
+        artifactPath = $ArtifactPath
+        executionPlanFingerprint = $ExecutionPlanFingerprint
+        packagingPolicy = New-PackagingPolicy -ExecutionPlanFingerprint $ExecutionPlanFingerprint
+    }
+}
+
+function New-PackagingPolicy {
+    param(
+        [string] $ExecutionPlanFingerprint = 'execution-plan-fingerprint-a',
+        [string[]] $IncludedPaths = @('**'),
+        [string[]] $ExcludedPaths = @(
+            'storage/app/private/**',
+            'storage/logs/**',
+            'storage/framework/cache/**',
+            'storage/framework/sessions/**',
+            'storage/framework/views/**',
+            'tests/**',
+            'node_modules/**',
+            'vendor/**',
+            'deployment-runs/**',
+            '.deployment/**',
+            '.git/**'
+        )
+    )
+    return [pscustomobject]@{
+        policyId = 'packaging-policy-test'
+        projectId = 'demo-project'
+        artifactType = 'deployment-archive'
+        vendorStrategy = 'exclude-install-on-target-from-lockfiles'
+        includedPaths = @($IncludedPaths)
+        excludedPaths = @($ExcludedPaths)
+        executionPlanFingerprint = $ExecutionPlanFingerprint
+        createdAt = '2026-07-28T12:00:00Z'
+    }
+}
+
 $tmp = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath ('local-operation-executor-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $tmp | Out-Null
 try {
@@ -78,6 +118,26 @@ try {
     Set-Content -LiteralPath (Join-Path -Path $source -ChildPath 'deploy.pem') -Value 'hidden' -Encoding UTF8
     Set-Content -LiteralPath (Join-Path -Path $source -ChildPath 'id_rsa') -Value 'hidden' -Encoding UTF8
     Set-Content -LiteralPath (Join-Path -Path $gitDir -ChildPath 'config') -Value 'hidden' -Encoding UTF8
+    foreach ($excludedDir in @(
+        'storage/app/private',
+        'storage/logs',
+        'storage/framework/cache',
+        'storage/framework/sessions',
+        'storage/framework/views',
+        'tests',
+        'node_modules/pkg',
+        'vendor/pkg',
+        'deployment-runs/run-1',
+        '.deployment/uploads/run-1',
+        '.idea',
+        '.vscode'
+    )) {
+        New-Item -ItemType Directory -Path (Join-Path -Path $source -ChildPath $excludedDir) -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path -Path $source -ChildPath (Join-Path $excludedDir 'excluded.txt')) -Value 'excluded' -Encoding UTF8
+    }
+    Set-Content -LiteralPath (Join-Path -Path $source -ChildPath 'Thumbs.db') -Value 'os' -Encoding UTF8
+    Set-Content -LiteralPath (Join-Path -Path $source -ChildPath 'notes.tmp') -Value 'temp' -Encoding UTF8
+    Set-Content -LiteralPath (Join-Path -Path $source -ChildPath 'local.bak') -Value 'backup' -Encoding UTF8
 
     $validSourceRequest = New-Request -Operation ([pscustomobject]@{ sourcePath = $source })
     $sourceBefore = @(Get-ChildItem -LiteralPath $source -Recurse -Force | ForEach-Object { $_.FullName } | Sort-Object)
@@ -127,31 +187,71 @@ try {
     Assert-Equal (Invoke-LocalOperationRequest -ExecutorRequest $renderedOnly).status 'rejected' 'Rendered command must not be interpreted as operation data.'
 
     $artifact = Join-Path -Path $tmp -ChildPath 'artifacts/deployment.zip'
-    $archiveRequest = New-Request -OperationType 'archive.create' -Operation ([pscustomobject]@{ sourcePath = $source; artifactPath = $artifact })
+    $archiveRequest = New-Request -OperationType 'archive.create' -Operation (New-ArchiveOperation -SourcePath $source -ArtifactPath $artifact)
     $archiveResult = Invoke-LocalOperationRequest -ExecutorRequest $archiveRequest
     Assert-Equal $archiveResult.status 'completed' 'Valid archive request must complete.'
     Assert-Equal $archiveResult.sessionId 'session-local-operation-tests' 'Completed archive result must contain request sessionId.'
     Assert-Equal @($archiveResult.artifacts).Count 1 'Archive result must contain exactly one artifact.'
     $archiveArtifact = @($archiveResult.artifacts | Select-Object -First 1)
     if ($archiveArtifact.Count -eq 1) {
-        Assert-Equal $archiveArtifact[0].type 'zip' 'Archive artifact type must be zip.'
-        Assert-Equal $archiveArtifact[0].path ([System.IO.Path]::GetFullPath($artifact)) 'Archive artifact path must be resolved.'
+        Assert-Equal $archiveArtifact[0].artifactType 'deployment-archive' 'Archive artifact type must describe a deployment archive.'
+        Assert-Equal $archiveArtifact[0].archiveFormat 'zip' 'Archive format must be zip.'
+        Assert-Equal $archiveArtifact[0].localPath ([System.IO.Path]::GetFullPath($artifact)) 'Archive artifact path must be resolved.'
+        Assert-Equal $archiveArtifact[0].fileName 'deployment.zip' 'Archive artifact file name must be preserved without directory.'
+        Assert-True ([int64] $archiveArtifact[0].fileSize -gt 0) 'Archive artifact file size must be recorded.'
+        Assert-True ([string] $archiveArtifact[0].hash -match '^[a-f0-9]{64}$') 'Archive artifact must contain SHA-256 hash.'
+        Assert-Equal $archiveArtifact[0].executionPlanFingerprint 'execution-plan-fingerprint-a' 'Archive artifact must be bound to execution plan fingerprint.'
+        Assert-Equal $archiveArtifact[0].packagingPolicyId 'packaging-policy-test' 'Archive artifact must be bound to packaging policy id.'
+        Assert-True ([string] $archiveArtifact[0].packagingPolicyFingerprint -match '^[a-f0-9]{64}$') 'Archive artifact must contain packaging policy fingerprint.'
+        Assert-True ([int64] $archiveArtifact[0].packagingValidation.includedFileCount -gt 0) 'Archive artifact must contain packaging included file count.'
+        Assert-True ([int64] $archiveArtifact[0].packagingValidation.excludedFileCount -gt 0) 'Archive artifact must contain packaging excluded file count.'
+        Assert-True (-not [string]::IsNullOrWhiteSpace([string] $archiveArtifact[0].createdAt)) 'Archive artifact creation timestamp must be recorded.'
     }
     Assert-True (Test-Path -LiteralPath $artifact -PathType Leaf) 'Archive file must be created.'
     $entries = Get-ZipEntries -Path $artifact
     Assert-True ($entries -contains 'index.php') 'ZIP must contain expected root file.'
     Assert-True ($entries -contains 'nested/view.txt') 'ZIP must contain expected nested file.'
-    foreach ($blocked in @('.env', '.env.local', '.git/config', 'deploy.pem', 'id_rsa')) {
+    foreach ($blocked in @(
+        '.env',
+        '.env.local',
+        '.git/config',
+        'deploy.pem',
+        'id_rsa',
+        'storage/app/private/excluded.txt',
+        'storage/logs/excluded.txt',
+        'storage/framework/cache/excluded.txt',
+        'storage/framework/sessions/excluded.txt',
+        'storage/framework/views/excluded.txt',
+        'tests/excluded.txt',
+        'node_modules/pkg/excluded.txt',
+        'vendor/pkg/excluded.txt',
+        'deployment-runs/run-1/excluded.txt',
+        '.deployment/uploads/run-1/excluded.txt',
+        '.idea/excluded.txt',
+        '.vscode/excluded.txt',
+        'Thumbs.db',
+        'notes.tmp',
+        'local.bak'
+    )) {
         Assert-True (-not ($entries -contains $blocked)) "ZIP must exclude '$blocked'."
     }
 
     $existing = Invoke-LocalOperationRequest -ExecutorRequest $archiveRequest
     Assert-Equal $existing.status 'rejected' 'Existing target archive must be rejected.'
-    $inside = Invoke-LocalOperationRequest -ExecutorRequest (New-Request -OperationType 'archive.create' -Operation ([pscustomobject]@{ sourcePath = $source; artifactPath = (Join-Path $source 'inside.zip') }))
+    $missingFingerprintArtifact = Join-Path -Path $tmp -ChildPath 'artifacts/missing-fingerprint.zip'
+    $missingFingerprint = Invoke-LocalOperationRequest -ExecutorRequest (New-Request -OperationType 'archive.create' -Operation ([pscustomobject]@{ sourcePath = $source; artifactPath = $missingFingerprintArtifact; packagingPolicy = New-PackagingPolicy }))
+    Assert-Equal $missingFingerprint.status 'rejected' 'Archive creation without executionPlanFingerprint must be rejected before producing reusable runtime artifact.'
+    $missingPolicyArtifact = Join-Path -Path $tmp -ChildPath 'artifacts/missing-policy.zip'
+    $missingPolicy = Invoke-LocalOperationRequest -ExecutorRequest (New-Request -OperationType 'archive.create' -Operation ([pscustomobject]@{ sourcePath = $source; artifactPath = $missingPolicyArtifact; executionPlanFingerprint = 'execution-plan-fingerprint-a' }))
+    Assert-Equal $missingPolicy.status 'rejected' 'Archive creation without packaging policy must be rejected.'
+    $wrongPolicyArtifact = Join-Path -Path $tmp -ChildPath 'artifacts/wrong-policy.zip'
+    $wrongPolicy = Invoke-LocalOperationRequest -ExecutorRequest (New-Request -OperationType 'archive.create' -Operation ([pscustomobject]@{ sourcePath = $source; artifactPath = $wrongPolicyArtifact; executionPlanFingerprint = 'execution-plan-fingerprint-a'; packagingPolicy = New-PackagingPolicy -ExecutionPlanFingerprint 'other-fingerprint' }))
+    Assert-Equal $wrongPolicy.status 'rejected' 'Packaging policy with wrong executionPlanFingerprint must be rejected.'
+    $inside = Invoke-LocalOperationRequest -ExecutorRequest (New-Request -OperationType 'archive.create' -Operation (New-ArchiveOperation -SourcePath $source -ArtifactPath (Join-Path $source 'inside.zip')))
     Assert-Equal $inside.status 'rejected' 'Artifact path inside source must be rejected.'
     $badDirFile = Join-Path -Path $tmp -ChildPath 'bad-parent'
     Set-Content -LiteralPath $badDirFile -Value 'not a directory' -Encoding UTF8
-    $badDir = Invoke-LocalOperationRequest -ExecutorRequest (New-Request -OperationType 'archive.create' -Operation ([pscustomobject]@{ sourcePath = $source; artifactPath = (Join-Path $badDirFile 'out.zip') }))
+    $badDir = Invoke-LocalOperationRequest -ExecutorRequest (New-Request -OperationType 'archive.create' -Operation (New-ArchiveOperation -SourcePath $source -ArtifactPath (Join-Path $badDirFile 'out.zip')))
     Assert-True ($badDir.status -in @('rejected', 'failed')) 'Invalid target directory must be rejected or failed.'
 
     $missingSessionRequest = New-Request -Operation ([pscustomobject]@{ sourcePath = $source })

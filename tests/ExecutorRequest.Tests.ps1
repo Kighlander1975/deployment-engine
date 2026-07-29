@@ -55,7 +55,7 @@ function New-TestCommandPlan {
         commands = @(
             New-TestCommand -Id 'source.validate' -Sequence 100 -Actor 'automation' -Location 'local' -Mode 'automatic' -Program 'local-operation'
             New-TestCommand -Id 'archive.create' -Sequence 300 -Actor 'automation' -Location 'local' -Mode 'automatic' -Program 'local-operation' -DependsOn @('source.validate')
-            New-TestCommand -Id 'remote.archive.upload' -Sequence 600 -Actor 'human-command' -Location 'local-to-remote' -Mode 'copy-and-run' -Program 'scp' -DependsOn @('deployment.approval') -RenderedCommand 'scp artifact deploy@example.org:/absolute/artifact.zip'
+            New-TestCommand -Id 'artifact.upload' -Sequence 600 -Actor 'human-command' -Location 'artifact-transport' -Mode 'copy-and-run' -Program 'network-share' -DependsOn @('deployment.approval') -RenderedCommand 'Copy-Item -LiteralPath artifact.zip -Destination D:\\Share\\.deployment\\uploads\\artifact.zip'
         )
         humanGates = @(
             [pscustomobject]@{ gateId = 'deployment.approval'; stepId = 'deployment.approval'; sequence = 400; dependsOn = @('archive.create'); gateType = 'approval'; blocksContinuation = $true; allowedResponses = @('approved', 'rejected') }
@@ -129,10 +129,10 @@ $remotePlan = Copy-ExecutorRequestObject -Value $plan
 $remotePlan.commands[0].executionLocation = 'remote'
 $remoteAdmission = Resolve-ExecutionAdmission -CommandPlan $remotePlan -CommandSession $session
 Assert-ThrowsLike -Script { Resolve-ExecutorRequest -CommandPlan $remotePlan -CommandSession $session -ExecutionAdmission $remoteAdmission | Out-Null } -Pattern "status must be 'eligible-but-disabled'" -Message 'Remote automation must be rejected.'
-$sshPlan = Copy-ExecutorRequestObject -Value $plan
-$sshPlan.commands[0].program = 'ssh'
-$sshAdmission = Resolve-ExecutionAdmission -CommandPlan $sshPlan -CommandSession $session
-Assert-ThrowsLike -Script { Resolve-ExecutorRequest -CommandPlan $sshPlan -CommandSession $session -ExecutionAdmission $sshAdmission | Out-Null } -Pattern "status must be 'eligible-but-disabled'" -Message 'SSH automation must be rejected.'
+$remoteProgramPlan = Copy-ExecutorRequestObject -Value $plan
+$remoteProgramPlan.commands[0].program = 'interactive-ssh'
+$remoteProgramAdmission = Resolve-ExecutionAdmission -CommandPlan $remoteProgramPlan -CommandSession $session
+Assert-ThrowsLike -Script { Resolve-ExecutorRequest -CommandPlan $remoteProgramPlan -CommandSession $session -ExecutionAdmission $remoteProgramAdmission | Out-Null } -Pattern "status must be 'eligible-but-disabled'" -Message 'Remote execution automation must be rejected.'
 $enabledPlan = Copy-ExecutorRequestObject -Value $plan
 $enabledPlan.executionPolicy.executionAllowed = $true
 Assert-ThrowsLike -Script { Resolve-ExecutorRequest -CommandPlan $enabledPlan -CommandSession $session -ExecutionAdmission $admission | Out-Null } -Pattern 'execution must remain disabled' -Message 'Plan with enabled execution must be rejected.'

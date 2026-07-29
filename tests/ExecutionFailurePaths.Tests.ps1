@@ -61,11 +61,24 @@ function New-TestCommand {
     }
 }
 
+function New-TestPackagingPolicy {
+    return [pscustomobject]@{
+        policyId = 'packaging-policy-failure-paths'
+        projectId = 'failure-paths'
+        artifactType = 'deployment-archive'
+        vendorStrategy = 'exclude-install-on-target-from-lockfiles'
+        includedPaths = @('**')
+        excludedPaths = @('storage/**', 'vendor/**', 'node_modules/**', 'tests/**', '.git/**', '.deployment/**', 'deployment-runs/**')
+        executionPlanFingerprint = 'execution-plan-fingerprint-failure-paths'
+        createdAt = '2026-07-28T12:00:00Z'
+    }
+}
+
 function New-TestCommandPlan {
     param([Parameter(Mandatory = $true)][string] $SourcePath, [bool] $IncludeHumanGate = $true, [bool] $IncludePostApproval = $true)
     $commands = @(
         New-TestCommand -Id 'source.validate' -Sequence 100 -OperationType 'source.validate' -Operation ([pscustomobject]@{ sourcePath = $SourcePath })
-        New-TestCommand -Id 'archive.create' -Sequence 200 -OperationType 'archive.create' -DependsOn @('source.validate') -Operation ([pscustomobject]@{ sourcePath = $SourcePath; artifactPath = '' })
+        New-TestCommand -Id 'archive.create' -Sequence 200 -OperationType 'archive.create' -DependsOn @('source.validate') -Operation ([pscustomobject]@{ sourcePath = $SourcePath; artifactPath = ''; executionPlanFingerprint = 'execution-plan-fingerprint-failure-paths'; packagingPolicy = New-TestPackagingPolicy })
     )
     $humanGates = @()
     if ($IncludeHumanGate) {

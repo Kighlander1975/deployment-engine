@@ -27,7 +27,7 @@ function Read-LocalOperationJsonFile {
 
 function Copy-LocalOperationObject {
     param([Parameter(Mandatory = $true)][object] $Value)
-    return $Value | ConvertTo-Json -Depth 100 | ConvertFrom-Json
+    return $Value | ConvertTo-Json -Depth 100 | ConvertFrom-Json -NoEnumerate
 }
 
 function Test-LocalOperationProperty {
@@ -176,18 +176,131 @@ function Invoke-SourceValidation {
 
 function Test-ArchiveExcludedFile {
     param([Parameter(Mandatory = $true)][string] $RelativePath)
-    $parts = @($RelativePath -split '[\\/]')
+    $normalized = ConvertTo-PackagingRelativePath -RelativePath $RelativePath
+    $parts = @($normalized -split '/')
     foreach ($part in $parts) {
         if ($part -eq '.git') { return $true }
     }
-    $leaf = [System.IO.Path]::GetFileName($RelativePath)
+    $leaf = [System.IO.Path]::GetFileName($normalized)
     return ($leaf -match '(?i)^\.env(\..*)?$|^id_rsa$|^id_ed25519$|\.key$|\.pem$')
+}
+
+function ConvertTo-PackagingRelativePath {
+    param([Parameter(Mandatory = $true)][string] $RelativePath)
+    $normalized = ($RelativePath -replace '\\', '/').TrimStart('/')
+    while ($normalized.Contains('//')) { $normalized = $normalized.Replace('//', '/') }
+    return $normalized
+}
+
+function Test-PackagingGlobMatch {
+    param([Parameter(Mandatory = $true)][string] $RelativePath, [Parameter(Mandatory = $true)][string] $Pattern)
+    $path = ConvertTo-PackagingRelativePath -RelativePath $RelativePath
+    $glob = ConvertTo-PackagingRelativePath -RelativePath $Pattern
+    if ([string]::IsNullOrWhiteSpace($glob)) { return $false }
+    if ($glob -eq '**' -or $glob -eq '*') { return $true }
+    if ($glob.EndsWith('/**')) {
+        $prefix = $glob.Substring(0, $glob.Length - 3).TrimEnd('/')
+        return ($path -eq $prefix -or $path.StartsWith($prefix + '/', [System.StringComparison]::OrdinalIgnoreCase))
+    }
+    return ($path -like $glob)
+}
+
+function Test-PackagingIncludedPath {
+    param([Parameter(Mandatory = $true)][string] $RelativePath, [Parameter(Mandatory = $true)][object[]] $IncludedPaths)
+    foreach ($pattern in @($IncludedPaths)) {
+        if (Test-PackagingGlobMatch -RelativePath $RelativePath -Pattern ([string] $pattern)) { return $true }
+    }
+    return $false
+}
+
+function Test-PackagingExcludedPath {
+    param([Parameter(Mandatory = $true)][string] $RelativePath, [Parameter(Mandatory = $true)][object[]] $ExcludedPaths)
+    if (Test-ArchiveExcludedFile -RelativePath $RelativePath) { return $true }
+    $normalized = ConvertTo-PackagingRelativePath -RelativePath $RelativePath
+    $leaf = [System.IO.Path]::GetFileName($normalized)
+    if ($leaf -match '(?i)^Thumbs\.db$|^Desktop\.ini$|^\.DS_Store$|^~\$|\.tmp$|\.temp$|\.bak$|\.old$|\.orig$|\.swp$|\.swo$') { return $true }
+    foreach ($part in @($normalized -split '/')) {
+        if ($part -match '(?i)^\.idea$|^\.vscode$') { return $true }
+    }
+    foreach ($pattern in @($ExcludedPaths)) {
+        if (Test-PackagingGlobMatch -RelativePath $normalized -Pattern ([string] $pattern)) { return $true }
+    }
+    return $false
+}
+
+function Get-PackagingPolicyFingerprint {
+    param([Parameter(Mandatory = $true)][object] $Policy)
+    $copy = Copy-LocalOperationObject -Value $Policy
+    $json = $copy | ConvertTo-Json -Depth 80 -Compress
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        return ([System.BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant()
+    } finally {
+        $sha.Dispose()
+    }
+}
+
+function Assert-PackagingPolicyArray {
+    param([Parameter(Mandatory = $true)][object] $Policy, [Parameter(Mandatory = $true)][string] $Name)
+    if (-not (Test-LocalOperationProperty -Object $Policy -Name $Name)) { throw "Packaging policy validation failed: missing required field '$Name'." }
+    if ($Policy.$Name -is [string] -or -not ($Policy.$Name -is [array])) { throw "Packaging policy validation failed: field '$Name' must be an array." }
+    foreach ($item in @($Policy.$Name)) {
+        if (-not ($item -is [string]) -or [string]::IsNullOrWhiteSpace([string] $item)) { throw "Packaging policy validation failed: field '$Name' must contain non-empty strings." }
+        $normalized = ConvertTo-PackagingRelativePath -RelativePath ([string] $item)
+        if ($normalized.StartsWith('../') -or $normalized.Contains('/../') -or $normalized -eq '..' -or $normalized -eq '.') {
+            throw "Packaging policy validation failed: field '$Name' contains an invalid path segment."
+        }
+    }
+}
+
+function Assert-PackagingPolicy {
+    param([Parameter(Mandatory = $true)][object] $Request)
+    if (-not (Test-LocalOperationProperty -Object $Request.operation -Name 'packagingPolicy') -or -not (Test-LocalOperationObjectLike -Value $Request.operation.packagingPolicy)) {
+        throw 'Packaging policy validation failed: packagingPolicy is required for archive.create.'
+    }
+    $policy = $Request.operation.packagingPolicy
+    foreach ($field in @('policyId', 'projectId', 'artifactType', 'vendorStrategy', 'executionPlanFingerprint')) {
+        Assert-LocalOperationRequestString -Object $policy -Name $field -Context 'Packaging policy'
+    }
+    if (-not (Test-LocalOperationProperty -Object $policy -Name 'createdAt') -or [string]::IsNullOrWhiteSpace([string] $policy.createdAt)) {
+        throw "Packaging policy validation failed: field 'createdAt' must not be empty."
+    }
+    Assert-PackagingPolicyArray -Policy $policy -Name 'includedPaths'
+    Assert-PackagingPolicyArray -Policy $policy -Name 'excludedPaths'
+    if ($policy.artifactType -ne 'deployment-archive') { throw "Packaging policy validation failed: artifactType must be 'deployment-archive'." }
+    if ([string] $policy.executionPlanFingerprint -ne [string] $Request.operation.executionPlanFingerprint) {
+        throw 'Packaging policy validation failed: executionPlanFingerprint must match archive.create executionPlanFingerprint.'
+    }
+    Assert-LocalOperationNoSecrets -Value $policy -Context 'Packaging policy'
+    return $policy
+}
+
+function New-PackagingValidationSummary {
+    param(
+        [object[]] $IncludedFiles = @(),
+        [object[]] $ExcludedFiles = @()
+    )
+    $includedSize = 0L
+    foreach ($file in @($IncludedFiles)) {
+        if (Test-LocalOperationProperty -Object $file -Name 'length') {
+            $includedSize += [int64] $file.length
+        }
+    }
+    return [pscustomobject]@{
+        includedFileCount = @($IncludedFiles).Count
+        excludedFileCount = @($ExcludedFiles).Count
+        includedBytes = [int64] $includedSize
+    }
 }
 
 function Invoke-ArchiveCreation {
     param([Parameter(Mandatory = $true)][object] $Request)
     $sourcePath = Get-LocalOperationSourcePath -Operation $Request.operation -Context 'Archive creation'
     Assert-LocalOperationRequestString -Object $Request.operation -Name 'artifactPath' -Context 'Archive creation'
+    Assert-LocalOperationRequestString -Object $Request.operation -Name 'executionPlanFingerprint' -Context 'Archive creation'
+    $packagingPolicy = Assert-PackagingPolicy -Request $Request
+    $packagingPolicyFingerprint = Get-PackagingPolicyFingerprint -Policy $packagingPolicy
     $artifactPath = Resolve-LocalOperationArtifactPath -Path ([string] $Request.operation.artifactPath)
     if ([string]::Equals($sourcePath.TrimEnd('\', '/'), $artifactPath.TrimEnd('\', '/'), [System.StringComparison]::OrdinalIgnoreCase)) {
         throw 'Archive creation validation failed: source path and artifact path must be different.'
@@ -214,18 +327,67 @@ function Invoke-ArchiveCreation {
         try {
             $sourceRoot = [System.IO.Path]::GetFullPath($sourcePath).TrimEnd('\', '/')
             $files = @(Get-ChildItem -LiteralPath $sourceRoot -Recurse -File -Force | Sort-Object FullName)
+            $includedFiles = New-Object System.Collections.Generic.List[object]
+            $excludedFiles = New-Object System.Collections.Generic.List[object]
             foreach ($file in $files) {
                 $relativePath = $file.FullName.Substring($sourceRoot.Length).TrimStart('\', '/')
-                if (Test-ArchiveExcludedFile -RelativePath $relativePath) { continue }
                 $entryName = $relativePath -replace '\\', '/'
+                if (-not (Test-PackagingIncludedPath -RelativePath $entryName -IncludedPaths @($packagingPolicy.includedPaths))) { continue }
+                if (Test-PackagingExcludedPath -RelativePath $entryName -ExcludedPaths @($packagingPolicy.excludedPaths)) {
+                    $excludedFiles.Add([pscustomobject]@{ relativePath = $entryName; length = [int64] $file.Length }) | Out-Null
+                    continue
+                }
+                $includedFiles.Add([pscustomobject]@{ relativePath = $entryName; length = [int64] $file.Length }) | Out-Null
                 [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $file.FullName, $entryName, [System.IO.Compression.CompressionLevel]::Optimal) | Out-Null
             }
         } finally {
             $zip.Dispose()
         }
-        return New-LocalOperationResult -Status 'completed' -Request $Request -OperationType ([string] $Request.operationType) -ExitStatus 0 -Diagnostic 'Archive created.' -Artifacts @([pscustomobject]@{ type = 'zip'; path = $artifactPath })
+        $validationSummary = New-PackagingValidationSummary -IncludedFiles $includedFiles.ToArray() -ExcludedFiles $excludedFiles.ToArray()
+        $runtimeArtifact = New-DeploymentRuntimeArchiveArtifact -ArtifactPath $artifactPath -Request $Request -PackagingPolicy $packagingPolicy -PackagingPolicyFingerprint $packagingPolicyFingerprint -PackagingValidation $validationSummary
+        return New-LocalOperationResult -Status 'completed' -Request $Request -OperationType ([string] $Request.operationType) -ExitStatus 0 -Diagnostic 'Archive created.' -Artifacts @($runtimeArtifact)
     } catch {
-        return New-LocalOperationResult -Status 'failed' -Request $Request -OperationType ([string] $Request.operationType) -ExitStatus 1 -Diagnostic 'Archive creation failed.'
+        return New-LocalOperationResult -Status 'failed' -Request $Request -OperationType ([string] $Request.operationType) -ExitStatus 1 -Diagnostic "Archive creation failed: $($_.Exception.Message)"
+    }
+}
+
+function New-DeploymentRuntimeArchiveArtifact {
+    param(
+        [Parameter(Mandatory = $true)][string] $ArtifactPath,
+        [Parameter(Mandatory = $true)][object] $Request,
+        [Parameter(Mandatory = $true)][object] $PackagingPolicy,
+        [Parameter(Mandatory = $true)][string] $PackagingPolicyFingerprint,
+        [Parameter(Mandatory = $true)][object] $PackagingValidation
+    )
+
+    if (-not (Test-Path -LiteralPath $ArtifactPath -PathType Leaf)) {
+        throw "Runtime artifact validation failed: archive file does not exist: $ArtifactPath"
+    }
+    if (-not (Test-LocalOperationProperty -Object $Request.operation -Name 'executionPlanFingerprint')) {
+        throw "Runtime artifact validation failed: executionPlanFingerprint is required."
+    }
+    $fingerprint = [string] $Request.operation.executionPlanFingerprint
+    if ([string]::IsNullOrWhiteSpace($fingerprint)) {
+        throw "Runtime artifact validation failed: executionPlanFingerprint must not be empty."
+    }
+    $file = Get-Item -LiteralPath $ArtifactPath
+    $hash = (Get-FileHash -LiteralPath $ArtifactPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $extension = [System.IO.Path]::GetExtension($file.Name).TrimStart('.').ToLowerInvariant()
+    if ([string]::IsNullOrWhiteSpace($extension)) { $extension = 'zip' }
+
+    return [pscustomobject]@{
+        artifactId = 'runtime-artifact-' + $hash.Substring(0, 16)
+        artifactType = 'deployment-archive'
+        archiveFormat = $extension
+        localPath = $file.FullName
+        fileName = $file.Name
+        fileSize = [int64] $file.Length
+        hash = $hash
+        executionPlanFingerprint = $fingerprint
+        packagingPolicyId = [string] $PackagingPolicy.policyId
+        packagingPolicyFingerprint = $PackagingPolicyFingerprint
+        packagingValidation = $PackagingValidation
+        createdAt = (Get-Date).ToUniversalTime().ToString('o')
     }
 }
 

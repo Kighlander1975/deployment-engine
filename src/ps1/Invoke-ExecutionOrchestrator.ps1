@@ -1,6 +1,10 @@
 [CmdletBinding()]
 param(
     [string] $CommandPlanPath,
+    [string] $ExecutionPlanPath,
+    [string] $DeploymentStrategyPath,
+    [string] $PackagingPolicyPath,
+    [string] $DeploymentRunId,
     [string] $SourceRepositoryPath,
     [string] $RuntimeRootPath,
     [string] $RuntimeDirectoryPath,
@@ -17,6 +21,10 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $orchestratorEntryCommandPlanPath = $CommandPlanPath
+$orchestratorEntryExecutionPlanPath = $ExecutionPlanPath
+$orchestratorEntryDeploymentStrategyPath = $DeploymentStrategyPath
+$orchestratorEntryPackagingPolicyPath = $PackagingPolicyPath
+$orchestratorEntryDeploymentRunId = $DeploymentRunId
 $orchestratorEntrySourceRepositoryPath = $SourceRepositoryPath
 $orchestratorEntryRuntimeRootPath = $RuntimeRootPath
 $orchestratorEntryRuntimeDirectoryPath = $RuntimeDirectoryPath
@@ -29,10 +37,15 @@ $orchestratorEntryModuleOnly = $ModuleOnly
 . (Join-Path -Path $PSScriptRoot -ChildPath 'New-RuntimeDirectory.ps1') -ModuleOnly
 . (Join-Path -Path $PSScriptRoot -ChildPath 'Test-CleanTree.ps1') -ModuleOnly
 . (Join-Path -Path $PSScriptRoot -ChildPath 'CommandSession.ps1')
+. (Join-Path -Path $PSScriptRoot -ChildPath 'Build-CommandPlan.ps1')
 . (Join-Path -Path $PSScriptRoot -ChildPath 'Build-ExecutorRequest.ps1') -ModuleOnly
 . (Join-Path -Path $PSScriptRoot -ChildPath 'Build-AutomationEvent.ps1') -ModuleOnly
 . (Join-Path -Path $PSScriptRoot -ChildPath 'Invoke-LocalOperationExecutor.ps1') -ModuleOnly
 $CommandPlanPath = $orchestratorEntryCommandPlanPath
+$ExecutionPlanPath = $orchestratorEntryExecutionPlanPath
+$DeploymentStrategyPath = $orchestratorEntryDeploymentStrategyPath
+$PackagingPolicyPath = $orchestratorEntryPackagingPolicyPath
+$DeploymentRunId = $orchestratorEntryDeploymentRunId
 $SourceRepositoryPath = $orchestratorEntrySourceRepositoryPath
 $RuntimeRootPath = $orchestratorEntryRuntimeRootPath
 $RuntimeDirectoryPath = $orchestratorEntryRuntimeDirectoryPath
@@ -161,16 +174,27 @@ function New-OrchestratorRuntimeFromDirectory {
 }
 
 function Set-OrchestratorRuntimeArtifactPaths {
-    param([Parameter(Mandatory = $true)][object] $CommandPlan, [Parameter(Mandatory = $true)][object] $Runtime)
+    param(
+        [Parameter(Mandatory = $true)][object] $CommandPlan,
+        [Parameter(Mandatory = $true)][object] $Runtime,
+        [string] $SourceRepositoryPath
+    )
     $plan = Copy-OrchestratorObject -Value $CommandPlan
     $defaultArtifact = Join-Path -Path ([string] $Runtime.artifactsDirectory) -ChildPath 'deployment.zip'
+    $resolvedSourceRepositoryPath = if ([string]::IsNullOrWhiteSpace($SourceRepositoryPath)) { '' } else { Resolve-OrchestratorPath -Path $SourceRepositoryPath }
     foreach ($command in @($plan.commands)) {
         if ([string] $command.program -ne 'local-operation') { continue }
         $operationType = [string] $command.operationType
-        if ($operationType -notin @('archive.create', 'archive-create')) { continue }
         if (-not (Test-OrchestratorProperty -Object $command -Name 'operation') -or $null -eq $command.operation) {
             Add-Member -InputObject $command -MemberType NoteProperty -Name 'operation' -Value ([pscustomobject]@{}) -Force
         }
+        if ($operationType -in @('source.validate', 'source-validate', 'archive.create', 'archive-create')) {
+            $sourcePath = if (Test-OrchestratorProperty -Object $command.operation -Name 'sourcePath') { [string] $command.operation.sourcePath } else { '' }
+            if ([string]::IsNullOrWhiteSpace($sourcePath) -and -not [string]::IsNullOrWhiteSpace($resolvedSourceRepositoryPath)) {
+                Add-Member -InputObject $command.operation -MemberType NoteProperty -Name 'sourcePath' -Value $resolvedSourceRepositoryPath -Force
+            }
+        }
+        if ($operationType -notin @('archive.create', 'archive-create')) { continue }
         $artifactPath = if (Test-OrchestratorProperty -Object $command.operation -Name 'artifactPath') { [string] $command.operation.artifactPath } else { '' }
         if ([string]::IsNullOrWhiteSpace($artifactPath)) {
             Add-Member -InputObject $command.operation -MemberType NoteProperty -Name 'artifactPath' -Value $defaultArtifact -Force
@@ -278,12 +302,132 @@ function Assert-OrchestratorResumeArtifactSlotsAvailable {
     foreach ($path in $paths) { Assert-OrchestratorArtifactPathAvailable -Path $path -Runtime $Runtime }
 }
 
+function Write-OrchestratorRuntimeArtifacts {
+    param(
+        [Parameter(Mandatory = $true)][object] $ExecutorResult,
+        [Parameter(Mandatory = $true)][object] $Runtime,
+        [Parameter(Mandatory = $true)][int] $Step
+    )
+
+    if (-not (Test-OrchestratorProperty -Object $ExecutorResult -Name 'artifacts') -or $null -eq $ExecutorResult.artifacts) {
+        return
+    }
+    $artifactIndex = 0
+    foreach ($artifact in @($ExecutorResult.artifacts)) {
+        if (-not (Test-OrchestratorProperty -Object $artifact -Name 'artifactId') -or [string]::IsNullOrWhiteSpace([string] $artifact.artifactId)) {
+            continue
+        }
+        $artifactIndex++
+        $safeId = ([string] $artifact.artifactId) -replace '[^A-Za-z0-9_.-]', '-'
+        $path = Join-Path -Path $Runtime.artifactsDirectory -ChildPath ('runtime-artifact-{0:0000}-{1}-{2}.json' -f $Step, $artifactIndex, $safeId)
+        Assert-OrchestratorArtifactPathAvailable -Path $path -Runtime $Runtime
+        Write-OrchestratorJson -Value $artifact -Path $path -RuntimeDirectory $Runtime.runtimeDirectory | Out-Null
+    }
+}
+
+function New-OrchestratorBootstrapCommandPlan {
+    param(
+        [Parameter(Mandatory = $true)][object] $CommandPlan,
+        [Parameter(Mandatory = $true)][object] $PackagingPolicy
+    )
+
+    $bootstrapCommands = @($CommandPlan.commands | Where-Object {
+        [string] $_.program -eq 'local-operation' -and [string] $_.operationType -in @('source.validate', 'source-validate', 'archive.create', 'archive-create')
+    } | Sort-Object sequence, commandId)
+
+    $requiredIds = @($bootstrapCommands | ForEach-Object { [string] $_.commandId })
+    if ('source.validate' -notin $requiredIds -or 'archive.create' -notin $requiredIds) {
+        throw 'Runtime artifact bootstrap validation failed: source.validate and archive.create commands are required.'
+    }
+
+    foreach ($command in @($bootstrapCommands)) {
+        $command.dependsOn = @($command.dependsOn | Where-Object { [string] $_ -in $requiredIds } | Sort-Object -Unique)
+        if ([string] $command.operationType -in @('archive.create', 'archive-create')) {
+            if (-not (Test-OrchestratorProperty -Object $command -Name 'operation') -or $null -eq $command.operation) {
+                Add-Member -InputObject $command -MemberType NoteProperty -Name 'operation' -Value ([pscustomobject]@{}) -Force
+            }
+            Add-Member -InputObject $command.operation -MemberType NoteProperty -Name 'packagingPolicy' -Value (Copy-OrchestratorObject -Value $PackagingPolicy) -Force
+        }
+    }
+
+    return [pscustomobject]@{
+        schemaVersion = '0.1'
+        commandPlanType = [string] $CommandPlan.commandPlanType
+        status = 'ready'
+        sourceStrategyType = [string] $CommandPlan.sourceStrategyType
+        selectedAdapterId = [string] $CommandPlan.selectedAdapterId
+        executionPlanFingerprint = if (Test-OrchestratorProperty -Object $CommandPlan -Name 'executionPlanFingerprint') { [string] $CommandPlan.executionPlanFingerprint } else { '' }
+        executionPolicy = Copy-OrchestratorObject -Value $CommandPlan.executionPolicy
+        commands = @($bootstrapCommands)
+        humanGates = @()
+        diagnostic = 'Bootstrap command plan for pre-session runtime artifact creation.'
+    }
+}
+
+function Get-OrchestratorLatestRuntimeArtifact {
+    param([Parameter(Mandatory = $true)][object] $Runtime)
+
+    $artifactFiles = @(Get-ChildItem -LiteralPath $Runtime.artifactsDirectory -Filter 'runtime-artifact-*.json' -File -ErrorAction SilentlyContinue | Sort-Object Name)
+    if ($artifactFiles.Count -eq 0) {
+        throw 'Runtime artifact bootstrap validation failed: archive.create did not produce a runtime artifact.'
+    }
+
+    return Read-OrchestratorJsonFile -Path ([string] $artifactFiles[-1].FullName) -Description 'Runtime artifact'
+}
+
+function Add-OrchestratorBootstrapCompletionEvents {
+    param(
+        [Parameter(Mandatory = $true)][object] $CommandSession,
+        [Parameter(Mandatory = $true)][string[]] $CompletedItemIds
+    )
+
+    $session = Copy-OrchestratorObject -Value $CommandSession
+    foreach ($itemId in @($CompletedItemIds)) {
+        $startedEvent = [pscustomobject]@{
+            schemaVersion = '0.1'
+            eventId = "bootstrap:automation-started:$itemId"
+            eventType = 'automation-started'
+            targetItemId = [string] $itemId
+        }
+        $session = Apply-CommandSessionEvent -CommandSession $session -Event $startedEvent
+
+        $resultEvent = [pscustomobject]@{
+            schemaVersion = '0.1'
+            eventId = "bootstrap:automation-result:$itemId"
+            eventType = 'automation-result'
+            targetItemId = [string] $itemId
+            result = [pscustomobject]@{
+                status = 'completed'
+                diagnostic = 'Completed during pre-session runtime artifact creation.'
+            }
+        }
+        $session = Apply-CommandSessionEvent -CommandSession $session -Event $resultEvent
+    }
+
+    return $session
+}
+
+function Set-OrchestratorDeploymentRunId {
+    param(
+        [Parameter(Mandatory = $true)][object] $DeploymentStrategy,
+        [string] $DeploymentRunId
+    )
+
+    if ([string]::IsNullOrWhiteSpace($DeploymentRunId)) {
+        return
+    }
+    if (-not (Test-OrchestratorProperty -Object $DeploymentStrategy -Name 'commandInputs') -or $null -eq $DeploymentStrategy.commandInputs -or -not ($DeploymentStrategy.commandInputs -is [psobject])) {
+        Add-Member -InputObject $DeploymentStrategy -MemberType NoteProperty -Name 'commandInputs' -Value ([pscustomobject]@{}) -Force
+    }
+    Add-Member -InputObject $DeploymentStrategy.commandInputs -MemberType NoteProperty -Name 'deploymentRunId' -Value $DeploymentRunId -Force
+}
+
 function Assert-OrchestratorResumeEvent {
     param([Parameter(Mandatory = $true)][object] $Event, [Parameter(Mandatory = $true)][object] $Session)
     if (-not (Test-OrchestratorProperty -Object $Event -Name 'eventType')) {
         throw "Execution resume validation failed: external event is missing eventType."
     }
-    if ([string] $Event.eventType -notin @('human-decision-submitted', 'human-command-result', 'review-result')) {
+    if ([string] $Event.eventType -notin @('human-decision-submitted', 'human-command-started', 'human-command-result', 'review-result')) {
         throw "Execution resume validation failed: unsupported external event type '$($Event.eventType)'."
     }
     if (-not (Test-OrchestratorProperty -Object $Event -Name 'sessionId') -or [string]::IsNullOrWhiteSpace([string] $Event.sessionId)) {
@@ -377,6 +521,7 @@ function Invoke-OrchestratorExecutionLoop {
 
         $executorResult = Invoke-LocalOperationRequest -ExecutorRequest $request
         Write-OrchestratorJson -Value $executorResult -Path (Join-Path -Path $Runtime.decisionsDirectory -ChildPath ('executor-result-{0:0000}.json' -f $step)) -RuntimeDirectory $Runtime.runtimeDirectory | Out-Null
+        Write-OrchestratorRuntimeArtifacts -ExecutorResult $executorResult -Runtime $Runtime -Step $step
 
         $resultEvent = Build-AutomationResultEvent -CommandSession $runningSession -ExecutorRequest $request -ExecutorResult $executorResult -Timestamp (Get-OrchestratorTimestamp)
         Write-OrchestratorJson -Value $resultEvent -Path (Join-Path -Path $Runtime.eventsDirectory -ChildPath ('automation-result-{0:0000}.json' -f $step)) -RuntimeDirectory $Runtime.runtimeDirectory | Out-Null
@@ -394,6 +539,10 @@ function Invoke-OrchestratorExecutionLoop {
 function Invoke-LocalExecutionOrchestrator {
     param(
         [Parameter(Mandatory = $true)][string] $CommandPlanPath,
+        [string] $ExecutionPlanPath,
+        [string] $DeploymentStrategyPath,
+        [string] $PackagingPolicyPath,
+        [string] $DeploymentRunId,
         [Parameter(Mandatory = $true)][string] $SourceRepositoryPath,
         [Parameter(Mandatory = $true)][string] $RuntimeRootPath,
         [int] $MaxAutomationSteps = 50,
@@ -420,12 +569,44 @@ function Invoke-LocalExecutionOrchestrator {
             return $summary | ConvertTo-Json -Depth 100
         }
 
-        $effectivePlan = Set-OrchestratorRuntimeArtifactPaths -CommandPlan $commandPlan -Runtime $runtime
+        $effectivePlan = Set-OrchestratorRuntimeArtifactPaths -CommandPlan $commandPlan -Runtime $runtime -SourceRepositoryPath $SourceRepositoryPath
+        if ([string] $effectivePlan.status -eq 'incomplete') {
+            if ([string]::IsNullOrWhiteSpace($ExecutionPlanPath) -or [string]::IsNullOrWhiteSpace($DeploymentStrategyPath) -or [string]::IsNullOrWhiteSpace($PackagingPolicyPath)) {
+                throw 'Runtime artifact bootstrap validation failed: ExecutionPlanPath, DeploymentStrategyPath and PackagingPolicyPath are required for incomplete command plans.'
+            }
+
+            $packagingPolicy = Read-OrchestratorJsonFile -Path $PackagingPolicyPath -Description 'Packaging policy'
+            $bootstrapPlan = New-OrchestratorBootstrapCommandPlan -CommandPlan $effectivePlan -PackagingPolicy $packagingPolicy
+            Write-OrchestratorJson -Value $bootstrapPlan -Path (Join-Path -Path $runtime.decisionsDirectory -ChildPath 'command-plan-bootstrap.json') -RuntimeDirectory $runtime.runtimeDirectory | Out-Null
+            $bootstrapSession = New-CommandSession -CommandPlan $bootstrapPlan
+            Write-OrchestratorJson -Value $bootstrapSession -Path (Join-Path -Path $runtime.decisionsDirectory -ChildPath 'command-session-bootstrap-0000.json') -RuntimeDirectory $runtime.runtimeDirectory | Out-Null
+            $bootstrapSummary = Invoke-OrchestratorExecutionLoop -CommandPlan $bootstrapPlan -CommandSession $bootstrapSession -Runtime $runtime -StartIndex 1 -MaxAutomationSteps 2 -ExecutedAutomationCount 0
+            if ([string] $bootstrapSummary.status -ne 'completed') {
+                throw "Runtime artifact bootstrap failed: $($bootstrapSummary.diagnostic)"
+            }
+            $executedAutomationCount = [int] $bootstrapSummary.executedAutomationCount
+            $runtimeArtifact = Get-OrchestratorLatestRuntimeArtifact -Runtime $runtime
+            Write-OrchestratorJson -Value $runtimeArtifact -Path (Join-Path -Path $runtime.artifactsDirectory -ChildPath 'runtime-artifact-active.json') -RuntimeDirectory $runtime.runtimeDirectory | Out-Null
+
+            $executionPlan = Read-OrchestratorJsonFile -Path $ExecutionPlanPath -Description 'Resolved execution plan'
+            $deploymentStrategy = Read-OrchestratorJsonFile -Path $DeploymentStrategyPath -Description 'Deployment strategy'
+            Set-OrchestratorDeploymentRunId -DeploymentStrategy $deploymentStrategy -DeploymentRunId $DeploymentRunId
+            $effectivePlan = Resolve-CommandPlan -ExecutionPlan $executionPlan -DeploymentStrategy $deploymentStrategy -RuntimeArtifact $runtimeArtifact -PackagingPolicy $packagingPolicy
+            if ([string] $effectivePlan.status -ne 'ready') {
+                throw "Runtime artifact bootstrap validation failed: regenerated command plan status is '$($effectivePlan.status)'."
+            }
+        }
+
         Write-OrchestratorJson -Value $effectivePlan -Path (Join-Path -Path $runtime.decisionsDirectory -ChildPath 'command-plan-effective.json') -RuntimeDirectory $runtime.runtimeDirectory | Out-Null
         $session = New-CommandSession -CommandPlan $effectivePlan
-        Write-OrchestratorJson -Value $session -Path (Join-Path -Path $runtime.decisionsDirectory -ChildPath 'command-session-0000.json') -RuntimeDirectory $runtime.runtimeDirectory | Out-Null
+        if ($executedAutomationCount -gt 0) {
+            $session = Add-OrchestratorBootstrapCompletionEvents -CommandSession $session -CompletedItemIds @('source.validate', 'archive.create')
+        }
+        $sessionSnapshotIndex = if ($executedAutomationCount -gt 0) { $executedAutomationCount + 1 } else { 0 }
+        $loopStartIndex = if ($executedAutomationCount -gt 0) { $executedAutomationCount + 2 } else { 1 }
+        Write-OrchestratorJson -Value $session -Path (Join-Path -Path $runtime.decisionsDirectory -ChildPath ('command-session-{0:0000}.json' -f $sessionSnapshotIndex)) -RuntimeDirectory $runtime.runtimeDirectory | Out-Null
 
-        $summary = Invoke-OrchestratorExecutionLoop -CommandPlan $effectivePlan -CommandSession $session -Runtime $runtime -StartIndex 1 -MaxAutomationSteps $MaxAutomationSteps -ExecutedAutomationCount $executedAutomationCount
+        $summary = Invoke-OrchestratorExecutionLoop -CommandPlan $effectivePlan -CommandSession $session -Runtime $runtime -StartIndex $loopStartIndex -MaxAutomationSteps $MaxAutomationSteps -ExecutedAutomationCount $executedAutomationCount
     } catch {
         $status = if ($null -eq $runtime) { 'rejected' } else { 'failed' }
         $summary = New-OrchestratorResult -Status $status -Runtime $runtime -Session $session -ExecutedAutomationCount $executedAutomationCount -Diagnostic $_.Exception.Message
@@ -497,6 +678,6 @@ if (-not $ModuleOnly) {
         if ([string]::IsNullOrWhiteSpace($CommandPlanPath)) { throw "Missing required parameter for 'orchestrate-local-execution': -CommandPlanPath" }
         if ([string]::IsNullOrWhiteSpace($SourceRepositoryPath)) { throw "Missing required parameter for 'orchestrate-local-execution': -SourceRepositoryPath" }
         if ([string]::IsNullOrWhiteSpace($RuntimeRootPath)) { throw "Missing required parameter for 'orchestrate-local-execution': -RuntimeRootPath" }
-        Invoke-LocalExecutionOrchestrator -CommandPlanPath $CommandPlanPath -SourceRepositoryPath $SourceRepositoryPath -RuntimeRootPath $RuntimeRootPath -MaxAutomationSteps $MaxAutomationSteps -OutputPath $OutputPath -Format $Format
+        Invoke-LocalExecutionOrchestrator -CommandPlanPath $CommandPlanPath -ExecutionPlanPath $ExecutionPlanPath -DeploymentStrategyPath $DeploymentStrategyPath -PackagingPolicyPath $PackagingPolicyPath -DeploymentRunId $DeploymentRunId -SourceRepositoryPath $SourceRepositoryPath -RuntimeRootPath $RuntimeRootPath -MaxAutomationSteps $MaxAutomationSteps -OutputPath $OutputPath -Format $Format
     }
 }

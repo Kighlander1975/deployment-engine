@@ -36,7 +36,7 @@ function New-TestCommand {
         executionLocation = if ($Actor -eq 'automation') { 'local' } else { 'remote' }
         executionMode = $Mode
         dependsOn = @($DependsOn)
-        program = if ($Actor -eq 'automation') { 'local-operation' } else { 'ssh' }
+        program = if ($Actor -eq 'automation') { 'local-operation' } elseif ($Id -eq 'artifact.upload') { 'network-share' } else { 'interactive-ssh' }
         arguments = @()
         workingDirectory = ''
         environment = [pscustomobject]@{}
@@ -59,8 +59,8 @@ function New-TestCommandPlan {
         commands = @(
             New-TestCommand -Id 'source.validate' -Sequence 100 -Actor 'automation' -Mode 'automatic'
             New-TestCommand -Id 'archive.create' -Sequence 300 -Actor 'automation' -Mode 'automatic' -DependsOn @('source.validate')
-            New-TestCommand -Id 'remote.archive.upload' -Sequence 600 -Actor 'human-command' -Mode 'copy-and-run' -DependsOn @('deployment.approval') -RenderedCommand 'scp artifact deploy@example.org:/absolute/artifact.zip'
-            New-TestCommand -Id 'deployment.verify' -Sequence 900 -Actor 'review' -Mode 'none' -DependsOn @('remote.archive.upload')
+            New-TestCommand -Id 'artifact.upload' -Sequence 600 -Actor 'human-command' -Mode 'copy-and-run' -DependsOn @('deployment.approval') -RenderedCommand 'Copy-Item -LiteralPath artifact.zip -Destination D:\\Share\\.deployment\\uploads\\artifact.zip'
+            New-TestCommand -Id 'deployment.verify' -Sequence 900 -Actor 'review' -Mode 'none' -DependsOn @('artifact.upload')
         )
         humanGates = @(
             [pscustomobject]@{ gateId = 'deployment.approval'; stepId = 'deployment.approval'; sequence = 400; dependsOn = @('archive.create'); gateType = 'approval'; blocksContinuation = $true; allowedResponses = @('approved', 'rejected') }
@@ -95,7 +95,7 @@ Assert-Equal (Get-ItemById -Session $session -ItemId 'source.validate').status '
 Assert-Equal (Get-ItemById -Session $session -ItemId 'archive.create').status 'pending' 'Dependent automation must remain pending.'
 Assert-Equal (Get-ItemById -Session $session -ItemId 'deployment.approval').status 'pending' 'Human gate must wait for modeled dependencies.'
 Assert-Equal ((Get-ItemById -Session $session -ItemId 'deployment.approval').dependsOn -join ',') 'archive.create' 'Human gate must carry command plan dependencies.'
-Assert-Equal (Get-ItemById -Session $session -ItemId 'remote.archive.upload').status 'pending' 'Human gate must block dependent human commands.'
+Assert-Equal (Get-ItemById -Session $session -ItemId 'artifact.upload').status 'pending' 'Human gate must block dependent human commands.'
 Assert-Equal (Get-ItemById -Session $session -ItemId 'source.validate').attempt 0 'No item may be started automatically.'
 
 Assert-ThrowsLike -Script { Apply-CommandSessionEvent -CommandSession $session -Event (New-Event -Id 'event-001' -Type 'human-decision-submitted' -Target 'deployment.approval' -Payload ([pscustomobject]@{ decision = [pscustomobject]@{ value = 'approved' } })) | Out-Null } -Pattern 'human decision item must be waiting-for-human' -Message 'Approval must not be accepted before modeled dependencies complete.'
@@ -110,7 +110,7 @@ $sourceCompleted = Apply-CommandSessionEvent -CommandSession $sourceStarted -Eve
 Assert-Equal (Get-ItemById -Session $sourceCompleted -ItemId 'source.validate').status 'completed' 'Completed automation result must complete automation item.'
 Assert-Equal (Get-ItemById -Session $sourceCompleted -ItemId 'source.validate').feedback.diagnostic 'source ok' 'Automation result must be stored structurally.'
 Assert-Equal (Get-ItemById -Session $sourceCompleted -ItemId 'archive.create').status 'ready' 'Dependencies, not sequence alone, must activate items.'
-Assert-Equal (Get-ItemById -Session $sourceCompleted -ItemId 'remote.archive.upload').status 'pending' 'Upload must still wait for approval dependency.'
+Assert-Equal (Get-ItemById -Session $sourceCompleted -ItemId 'artifact.upload').status 'pending' 'Upload must still wait for approval dependency.'
 
 $archiveStarted = Apply-CommandSessionEvent -CommandSession $sourceCompleted -Event (New-Event -Id 'event-004' -Type 'automation-started' -Target 'archive.create' -Payload $null)
 Assert-Equal $archiveStarted.status 'in-progress' 'Session must remain in-progress while archive automation is running.'
@@ -123,28 +123,28 @@ Assert-Equal (Get-ItemById -Session $approvedBase -ItemId 'deployment.approval')
 $approvalEvent = New-Event -Id 'event-007' -Type 'human-decision-submitted' -Target 'deployment.approval' -Payload ([pscustomobject]@{ decision = [pscustomobject]@{ value = 'approved' } })
 $afterApproval = Apply-CommandSessionEvent -CommandSession $approvedBase -Event $approvalEvent
 Assert-Equal (Get-ItemById -Session $afterApproval -ItemId 'deployment.approval').status 'completed' 'Approval event must complete approval item.'
-Assert-Equal (Get-ItemById -Session $afterApproval -ItemId 'remote.archive.upload').status 'waiting-for-human' 'Approval must allow dependent human command to wait for input.'
+Assert-Equal (Get-ItemById -Session $afterApproval -ItemId 'artifact.upload').status 'waiting-for-human' 'Approval must allow dependent human command to wait for input.'
 Assert-Equal @($afterApproval.eventHistory).Count 5 'Valid state changes must be recorded.'
 
 $rejectionSession = Apply-CommandSessionEvent -CommandSession $approvedBase -Event (New-Event -Id 'event-008' -Type 'human-decision-submitted' -Target 'deployment.approval' -Payload ([pscustomobject]@{ decision = [pscustomobject]@{ value = 'rejected' } }))
 Assert-Equal $rejectionSession.status 'cancelled' 'Rejected approval must cancel the session.'
 Assert-ThrowsLike -Script { Apply-CommandSessionEvent -CommandSession $approvedBase -Event (New-Event -Id 'event-009' -Type 'human-decision-submitted' -Target 'deployment.approval' -Payload ([pscustomobject]@{ decision = [pscustomobject]@{ value = 'maybe' } })) | Out-Null } -Pattern 'is not allowed' -Message 'Invalid decision must be rejected.'
-Assert-ThrowsLike -Script { Apply-CommandSessionEvent -CommandSession $afterApproval -Event (New-Event -Id 'event-007' -Type 'human-command-started' -Target 'remote.archive.upload' -Payload $null) | Out-Null } -Pattern 'duplicate eventId' -Message 'Duplicate event IDs must be rejected.'
+Assert-ThrowsLike -Script { Apply-CommandSessionEvent -CommandSession $afterApproval -Event (New-Event -Id 'event-007' -Type 'human-command-started' -Target 'artifact.upload' -Payload $null) | Out-Null } -Pattern 'duplicate eventId' -Message 'Duplicate event IDs must be rejected.'
 Assert-ThrowsLike -Script { Apply-CommandSessionEvent -CommandSession $afterApproval -Event (New-Event -Id 'event-010' -Type 'human-decision-submitted' -Target 'deployment.approval' -Payload ([pscustomObject]@{ decision = [pscustomobject]@{ value = 'approved' } })) | Out-Null } -Pattern 'already terminal' -Message 'Doubled decision on completed item must be rejected.'
 
-$started = Apply-CommandSessionEvent -CommandSession $afterApproval -Event (New-Event -Id 'event-011' -Type 'human-command-started' -Target 'remote.archive.upload' -Payload $null)
-Assert-Equal (Get-ItemById -Session $started -ItemId 'remote.archive.upload').status 'running' 'Started event must set human command to running.'
-Assert-Equal (Get-ItemById -Session $started -ItemId 'remote.archive.upload').attempt 1 'Started event must increment attempt.'
+$started = Apply-CommandSessionEvent -CommandSession $afterApproval -Event (New-Event -Id 'event-011' -Type 'human-command-started' -Target 'artifact.upload' -Payload $null)
+Assert-Equal (Get-ItemById -Session $started -ItemId 'artifact.upload').status 'running' 'Started event must set human command to running.'
+Assert-Equal (Get-ItemById -Session $started -ItemId 'artifact.upload').attempt 1 'Started event must increment attempt.'
 Assert-Equal $started.status 'in-progress' 'Session must be in-progress while a human command is running.'
-$successful = Apply-CommandSessionEvent -CommandSession $started -Event (New-Event -Id 'event-012' -Type 'human-command-result' -Target 'remote.archive.upload' -Payload ([pscustomobject]@{ result = [pscustomobject]@{ exitStatus = 0; stdout = 'ok'; stderr = '' } }))
-Assert-Equal (Get-ItemById -Session $successful -ItemId 'remote.archive.upload').status 'completed' 'Exit status 0 must complete human command.'
-Assert-Equal (Get-ItemById -Session $successful -ItemId 'remote.archive.upload').feedback.stdout 'ok' 'stdout must be stored structurally.'
+$successful = Apply-CommandSessionEvent -CommandSession $started -Event (New-Event -Id 'event-012' -Type 'human-command-result' -Target 'artifact.upload' -Payload ([pscustomobject]@{ result = [pscustomobject]@{ exitStatus = 0; stdout = 'ok'; stderr = '' } }))
+Assert-Equal (Get-ItemById -Session $successful -ItemId 'artifact.upload').status 'completed' 'Exit status 0 must complete human command.'
+Assert-Equal (Get-ItemById -Session $successful -ItemId 'artifact.upload').feedback.stdout 'ok' 'stdout must be stored structurally.'
 Assert-Equal (Get-ItemById -Session $successful -ItemId 'deployment.verify').status 'waiting-for-human' 'Review must become waiting after command dependency completes.'
 
-$failedRun = Apply-CommandSessionEvent -CommandSession $started -Event (New-Event -Id 'event-013' -Type 'human-command-result' -Target 'remote.archive.upload' -Payload ([pscustomobject]@{ result = [pscustomobject]@{ exitStatus = 1; stdout = ''; stderr = 'permission denied' } }))
+$failedRun = Apply-CommandSessionEvent -CommandSession $started -Event (New-Event -Id 'event-013' -Type 'human-command-result' -Target 'artifact.upload' -Payload ([pscustomobject]@{ result = [pscustomobject]@{ exitStatus = 1; stdout = ''; stderr = 'permission denied' } }))
 Assert-Equal $failedRun.status 'failed' 'Non-zero exit status must fail the session.'
-Assert-Equal (Get-ItemById -Session $failedRun -ItemId 'remote.archive.upload').feedback.stderr 'permission denied' 'stderr must be stored structurally.'
-Assert-ThrowsLike -Script { Apply-CommandSessionEvent -CommandSession $afterApproval -Event (New-Event -Id 'event-014' -Type 'human-command-result' -Target 'remote.archive.upload' -Payload ([pscustomobject]@{ result = [pscustomobject]@{ exitStatus = 0; stdout = ''; stderr = '' } })) | Out-Null } -Pattern 'requires running item' -Message 'Result without started event must be rejected.'
+Assert-Equal (Get-ItemById -Session $failedRun -ItemId 'artifact.upload').feedback.stderr 'permission denied' 'stderr must be stored structurally.'
+Assert-ThrowsLike -Script { Apply-CommandSessionEvent -CommandSession $afterApproval -Event (New-Event -Id 'event-014' -Type 'human-command-result' -Target 'artifact.upload' -Payload ([pscustomobject]@{ result = [pscustomobject]@{ exitStatus = 0; stdout = ''; stderr = '' } })) | Out-Null } -Pattern 'requires running item' -Message 'Result without started event must be rejected.'
 
 $reviewApproved = Apply-CommandSessionEvent -CommandSession $successful -Event (New-Event -Id 'event-015' -Type 'review-result' -Target 'deployment.verify' -Payload ([pscustomobject]@{ review = [pscustomobject]@{ status = 'approved'; diagnostic = '' } }))
 Assert-Equal (Get-ItemById -Session $reviewApproved -ItemId 'deployment.verify').status 'completed' 'Approved review must complete review item.'
@@ -157,7 +157,7 @@ Assert-ThrowsLike -Script { Apply-CommandSessionEvent -CommandSession $successfu
 Assert-ThrowsLike -Script { Apply-CommandSessionEvent -CommandSession $session -Event ([pscustomobject]@{ schemaVersion = '0.1'; eventType = 'human-command-started'; targetItemId = 'source.validate' }) | Out-Null } -Pattern "missing required field 'eventId'" -Message 'Event ID must be required.'
 Assert-ThrowsLike -Script { Apply-CommandSessionEvent -CommandSession $session -Event ([pscustomobject]@{ schemaVersion = '0.1'; eventId = 'event-019'; eventType = 'magic'; targetItemId = 'source.validate' }) | Out-Null } -Pattern "unsupported status 'magic'" -Message 'Unknown event type must be rejected.'
 Assert-ThrowsLike -Script { Apply-CommandSessionEvent -CommandSession $session -Event (New-Event -Id 'event-020' -Type 'human-command-started' -Target 'source.validate' -Payload $null) | Out-Null } -Pattern 'requires human-command item' -Message 'Wrong actor/event mix must be rejected.'
-Assert-ThrowsLike -Script { Apply-CommandSessionEvent -CommandSession $session -Event (New-Event -Id 'event-021' -Type 'automation-started' -Target 'remote.archive.upload' -Payload $null) | Out-Null } -Pattern 'requires automation item' -Message 'Automation start must reject non-automation items.'
+Assert-ThrowsLike -Script { Apply-CommandSessionEvent -CommandSession $session -Event (New-Event -Id 'event-021' -Type 'automation-started' -Target 'artifact.upload' -Payload $null) | Out-Null } -Pattern 'requires automation item' -Message 'Automation start must reject non-automation items.'
 Assert-ThrowsLike -Script { Apply-CommandSessionEvent -CommandSession $session -Event (New-Event -Id 'event-022' -Type 'automation-result' -Target 'source.validate' -Payload ([pscustomobject]@{ result = [pscustomobject]@{ status = 'unknown'; diagnostic = '' } })) | Out-Null } -Pattern 'automation result requires running item' -Message 'Automation result must require a running item before validating result status.'
 Assert-ThrowsLike -Script { Apply-CommandSessionEvent -CommandSession $sourceStarted -Event (New-Event -Id 'event-023' -Type 'automation-result' -Target 'source.validate' -Payload ([pscustomobject]@{ result = [pscustomobject]@{ status = 'unknown'; diagnostic = '' } })) | Out-Null } -Pattern "unsupported status 'unknown'" -Message 'Unknown automation result status must be rejected.'
 Assert-ThrowsLike -Script { Apply-CommandSessionEvent -CommandSession $session -Event (New-Event -Id 'event-024' -Type 'human-command-started' -Target 'missing' -Payload $null) | Out-Null } -Pattern "target item 'missing' does not exist" -Message 'Unknown event target must be rejected.'
@@ -173,7 +173,7 @@ $cyclePlan.commands[0].dependsOn = @('archive.create')
 Assert-ThrowsLike -Script { New-CommandSession -CommandPlan $cyclePlan | Out-Null } -Pattern 'cyclic dependency detected' -Message 'Dependency cycles must be rejected.'
 
 $sessionBefore = $afterApproval | ConvertTo-Json -Depth 60
-$eventBefore = (New-Event -Id 'event-025' -Type 'human-command-started' -Target 'remote.archive.upload' -Payload $null) | ConvertTo-Json -Depth 60
+$eventBefore = (New-Event -Id 'event-025' -Type 'human-command-started' -Target 'artifact.upload' -Payload $null) | ConvertTo-Json -Depth 60
 $eventObj = $eventBefore | ConvertFrom-Json
 $updated = Apply-CommandSessionEvent -CommandSession $afterApproval -Event $eventObj
 Assert-Equal ($afterApproval | ConvertTo-Json -Depth 60) $sessionBefore 'Command session input must not be mutated.'

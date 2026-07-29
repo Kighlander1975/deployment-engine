@@ -79,23 +79,41 @@ function New-TestCommand {
     }
 }
 
+function New-TestPackagingPolicy {
+    return [pscustomobject]@{
+        policyId = 'packaging-policy-orchestrator'
+        projectId = 'orchestrator'
+        artifactType = 'deployment-archive'
+        vendorStrategy = 'exclude-install-on-target-from-lockfiles'
+        includedPaths = @('**')
+        excludedPaths = @('storage/**', 'vendor/**', 'node_modules/**', 'tests/**', '.git/**', '.deployment/**', 'deployment-runs/**')
+        executionPlanFingerprint = 'execution-plan-fingerprint-orchestrator'
+        createdAt = '2026-07-28T12:00:00Z'
+    }
+}
+
 function New-TestCommandPlan {
     param(
         [Parameter(Mandatory = $true)][string] $SourcePath,
         [string] $ArtifactPath = '',
         [bool] $IncludeArchive = $true,
         [bool] $IncludeHumanGate = $false,
+        [bool] $IncludeHumanCommandAfterGate = $false,
         [string] $ArchiveSourcePath = ''
     )
     if ([string]::IsNullOrWhiteSpace($ArchiveSourcePath)) { $ArchiveSourcePath = $SourcePath }
     $commands = @()
     $commands += New-TestCommand -Id 'source.validate' -Sequence 100 -Actor 'automation' -Location 'local' -Mode 'automatic' -Program 'local-operation' -Operation ([pscustomobject]@{ sourcePath = $SourcePath })
     if ($IncludeArchive) {
-        $commands += New-TestCommand -Id 'archive.create' -Sequence 300 -Actor 'automation' -Location 'local' -Mode 'automatic' -Program 'local-operation' -DependsOn @('source.validate') -Operation ([pscustomobject]@{ sourcePath = $ArchiveSourcePath; artifactPath = $ArtifactPath })
+        $commands += New-TestCommand -Id 'archive.create' -Sequence 300 -Actor 'automation' -Location 'local' -Mode 'automatic' -Program 'local-operation' -DependsOn @('source.validate') -Operation ([pscustomobject]@{ sourcePath = $ArchiveSourcePath; artifactPath = $ArtifactPath; executionPlanFingerprint = 'execution-plan-fingerprint-orchestrator'; packagingPolicy = New-TestPackagingPolicy })
     }
     $humanGates = @()
     if ($IncludeHumanGate) {
         $humanGates = @([pscustomobject]@{ gateId = 'deployment.approval'; stepId = 'deployment.approval'; sequence = 400; dependsOn = @('archive.create'); gateType = 'approval'; blocksContinuation = $true; allowedResponses = @('approved', 'rejected') })
+    }
+    if ($IncludeHumanCommandAfterGate) {
+        if (-not $IncludeHumanGate) { throw 'Test setup requires IncludeHumanGate when IncludeHumanCommandAfterGate is set.' }
+        $commands += New-TestCommand -Id 'artifact.upload' -Sequence 500 -Actor 'human-command' -Location 'artifact-transport' -Mode 'copy-and-run' -Program 'network-share' -DependsOn @('deployment.approval') -RenderedCommand 'Copy-Item -LiteralPath artifact.zip -Destination upload.zip'
     }
 
     return [pscustomobject]@{
@@ -151,11 +169,26 @@ try {
     Assert-True (Test-Path -LiteralPath (Join-Path $success.runtimeDirectory 'events/automation-started-0001.json') -PathType Leaf) 'Started event for first automation must be stored.'
     Assert-True (Test-Path -LiteralPath (Join-Path $success.runtimeDirectory 'events/automation-result-0002.json') -PathType Leaf) 'Result event for second automation must be stored.'
     Assert-True (Test-Path -LiteralPath (Join-Path $success.runtimeDirectory 'artifacts/deployment.zip') -PathType Leaf) 'Archive artifact must be created inside runtime artifacts.'
+    $runtimeArtifactFiles = @(Get-ChildItem -LiteralPath (Join-Path $success.runtimeDirectory 'artifacts') -Filter 'runtime-artifact-*.json' -File)
+    Assert-Equal $runtimeArtifactFiles.Count 1 'Successful archive creation must persist one runtime artifact metadata file.'
+    $runtimeArtifact = Get-Content -LiteralPath $runtimeArtifactFiles[0].FullName -Raw | ConvertFrom-Json
+    Assert-Equal $runtimeArtifact.artifactType 'deployment-archive' 'Runtime artifact metadata must describe deployment archive.'
+    Assert-Equal $runtimeArtifact.executionPlanFingerprint 'execution-plan-fingerprint-orchestrator' 'Runtime artifact metadata must be bound to execution plan fingerprint.'
+    Assert-Equal $runtimeArtifact.packagingPolicyId 'packaging-policy-orchestrator' 'Runtime artifact metadata must be bound to packaging policy.'
     Assert-Equal (Get-Summary -RuntimePath $success.runtimeDirectory).status 'completed' 'Execution summary file must report completed.'
     Assert-Equal @((Get-ChildItem -LiteralPath (Join-Path $success.runtimeDirectory 'decisions') -Filter 'command-session-*-result.json')).Count 2 'Session result snapshots must be preserved without overwrite.'
     Assert-RuntimeOnlyFiles -RuntimePath $success.runtimeDirectory
     Assert-Equal ((Invoke-TestGit -RepositoryPath $successRepo -Arguments @('status', '--porcelain=v1', '--untracked-files=all')) -join '') '' 'Source repository must remain clean after orchestration.'
     Assert-Equal @(Get-ChildItem -LiteralPath $successRepo -Filter 'command-session*.json' -Recurse -File -Force).Count 0 'No session files may be written to source repository.'
+
+    $incompletePlan = New-TestCommandPlan -SourcePath $successRepo -IncludeHumanGate:$true
+    $incompletePlan.status = 'incomplete'
+    $incompleteArchiveCommand = @($incompletePlan.commands | Where-Object { $_.commandId -eq 'archive.create' } | Select-Object -First 1)[0]
+    $incompleteArchiveCommand.operation.PSObject.Properties.Remove('packagingPolicy')
+    $bootstrapPlan = New-OrchestratorBootstrapCommandPlan -CommandPlan $incompletePlan -PackagingPolicy (New-TestPackagingPolicy)
+    $bootstrapArchiveCommand = @($bootstrapPlan.commands | Where-Object { $_.commandId -eq 'archive.create' } | Select-Object -First 1)[0]
+    Assert-Equal $bootstrapPlan.status 'ready' 'Bootstrap plan must be ready even when the source command plan is incomplete.'
+    Assert-Equal $bootstrapArchiveCommand.operation.packagingPolicy.policyId 'packaging-policy-orchestrator' 'Bootstrap archive command must receive the explicit packaging policy.'
 
     $dirtyRepo = New-TestRepository -RootPath $tmp -Name 'dirty-repo'
     Set-Content -LiteralPath (Join-Path -Path $dirtyRepo -ChildPath 'dirty.txt') -Value 'dirty' -Encoding UTF8
@@ -180,6 +213,26 @@ try {
     Assert-Equal $human.executedAutomationCount 2 'Human gate run must complete local automation first.'
     $humanSession = Get-Content -LiteralPath (Join-Path $human.runtimeDirectory 'decisions/command-session-0002-result.json') -Raw | ConvertFrom-Json
     Assert-Equal (@($humanSession.items | Where-Object { $_.itemId -eq 'deployment.approval' })[0].status) 'waiting-for-human' 'Approval gate must wait for human input.'
+
+    $handoffRepo = New-TestRepository -RootPath $tmp -Name 'human-command-handoff-repo'
+    $handoffPlanPath = Join-Path -Path $tmp -ChildPath 'human-command-handoff-plan.json'
+    Save-Plan -Plan (New-TestCommandPlan -SourcePath $handoffRepo -IncludeHumanGate:$true -IncludeHumanCommandAfterGate:$true) -Path $handoffPlanPath
+    Use-TestRunId -RunId 'run-human-command-handoff'
+    $handoff = Invoke-LocalExecutionOrchestrator -CommandPlanPath $handoffPlanPath -SourceRepositoryPath $handoffRepo -RuntimeRootPath $runtimeRoot -Format Json | ConvertFrom-Json
+    Assert-Equal $handoff.currentItemId 'deployment.approval' 'Handoff run must first pause at approval.'
+    $handoffApprovalPath = Join-Path -Path $tmp -ChildPath 'handoff-approval.json'
+    Save-Plan -Plan ([pscustomobject]@{ schemaVersion = '0.1'; sessionId = [string] $handoff.sessionId; eventId = 'handoff-approval'; eventType = 'human-decision-submitted'; targetItemId = 'deployment.approval'; decision = [pscustomobject]@{ value = 'approved' } }) -Path $handoffApprovalPath
+    $handoffApproved = Invoke-LocalExecutionResume -RuntimeDirectoryPath $handoff.runtimeDirectory -SessionEventPath $handoffApprovalPath -Format Json | ConvertFrom-Json
+    Assert-Equal $handoffApproved.currentItemId 'artifact.upload' 'Approval must advance to the human command.'
+    $handoffStartPath = Join-Path -Path $tmp -ChildPath 'handoff-start.json'
+    Save-Plan -Plan ([pscustomobject]@{ schemaVersion = '0.1'; sessionId = [string] $handoff.sessionId; eventId = 'handoff-start'; eventType = 'human-command-started'; targetItemId = 'artifact.upload' }) -Path $handoffStartPath
+    $handoffStarted = Invoke-LocalExecutionResume -RuntimeDirectoryPath $handoff.runtimeDirectory -SessionEventPath $handoffStartPath -Format Json | ConvertFrom-Json
+    Assert-Equal $handoffStarted.status 'waiting-for-human' 'Started human command must keep orchestration waiting for output.'
+    Assert-Equal $handoffStarted.sessionStatus 'in-progress' 'Started human command must put the session in progress.'
+    $handoffStartedSessionFile = @(Get-ChildItem -LiteralPath (Join-Path $handoff.runtimeDirectory 'decisions') -Filter 'command-session-*-external.json' -File | Sort-Object Name | Select-Object -Last 1)
+    Assert-True ($handoffStartedSessionFile.Count -eq 1) 'Human command start resume must persist an external session snapshot.'
+    $handoffStartedSession = Get-Content -LiteralPath $handoffStartedSessionFile[0].FullName -Raw | ConvertFrom-Json
+    Assert-Equal (@($handoffStartedSession.items | Where-Object { $_.itemId -eq 'artifact.upload' })[0].status) 'running' 'Human command start event must be persisted as running.'
 
     $failedRepo = New-TestRepository -RootPath $tmp -Name 'failed-repo'
     $failedSource = Join-Path -Path $tmp -ChildPath 'failed-source'

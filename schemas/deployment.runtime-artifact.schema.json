@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/Kighlander1975/deployment-engine/main/schemas/deployment.runtime-artifact.schema.json",
+  "title": "SHK-MOMM Deployment Runtime Artifact",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "artifactId",
+    "artifactType",
+    "archiveFormat",
+    "localPath",
+    "fileName",
+    "fileSize",
+    "hash",
+    "executionPlanFingerprint",
+    "packagingPolicyId",
+    "packagingPolicyFingerprint",
+    "packagingValidation",
+    "createdAt"
+  ],
+  "properties": {
+    "$schema": { "type": "string" },
+    "artifactId": { "type": "string", "minLength": 1 },
+    "artifactType": { "type": "string", "const": "deployment-archive" },
+    "archiveFormat": { "type": "string", "enum": ["zip", "tar"] },
+    "localPath": { "type": "string", "minLength": 1 },
+    "fileName": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[^\\\\/]+$"
+    },
+    "fileSize": { "type": "integer", "minimum": 0 },
+    "hash": {
+      "type": "string",
+      "pattern": "^[A-Fa-f0-9]{64}$"
+    },
+    "executionPlanFingerprint": { "type": "string", "minLength": 1 },
+    "packagingPolicyId": { "type": "string", "minLength": 1 },
+    "packagingPolicyFingerprint": {
+      "type": "string",
+      "pattern": "^[A-Fa-f0-9]{64}$"
+    },
+    "packagingValidation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["includedFileCount", "excludedFileCount", "includedBytes"],
+      "properties": {
+        "includedFileCount": { "type": "integer", "minimum": 0 },
+        "excludedFileCount": { "type": "integer", "minimum": 0 },
+        "includedBytes": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "createdAt": { "type": "string", "minLength": 1 }
+  }
+}

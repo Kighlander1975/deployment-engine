@@ -89,6 +89,22 @@ function New-TestResolvedPlan {
             serverRoot = '/var/www'
             applicationRemoteDirectory = '/var/www/laravel_app'
             markerFile = '.deploy-version'
+            sharedStorage = [pscustomobject]@{
+                configurationPresent = $true
+                rootResolved = $true
+                root = 'shared'
+                sharedRootAbsolutePath = '/var/www/laravel_app/shared'
+                directories = @([pscustomobject]@{
+                    sharedPath = 'laravel_app/storage/app/private'
+                    releaseLinkPath = 'laravel_app/storage/app/private'
+                    pathKind = 'directory'
+                    conflictPolicy = 'fail'
+                    initializationPolicy = 'explicit'
+                    sharedAbsolutePath = '/var/www/laravel_app/shared/laravel_app/storage/app/private'
+                })
+                files = @()
+                diagnostics = @()
+            }
         }
         baselineCommit = 'abc'
         targetCommit = 'def'
@@ -154,8 +170,8 @@ function Assert-NoConcreteCommands {
     param([object] $Strategy)
 
     $json = $Strategy | ConvertTo-Json -Depth 40
-    foreach ($pattern in @('ssh\s+\S', 'scp\s+\S', 'rsync\s+\S', 'unzip\s+\S', 'tar\s+-x', '7z\s+\S', 'composer\s+\S', 'artisan\s+\S', 'git\s+\S')) {
-        Assert-True (-not ($json -match $pattern)) "Strategy output must not contain concrete command pattern '$pattern'."
+    foreach ($pattern in @('ssh\s+\S', 'scp\s+\S', 'rsync\s+\S', 'unzip\s+\S', 'tar\s+-x', '7z\s+\S', 'git\s+\S')) {
+        Assert-True (-not ($json -cmatch $pattern)) "Strategy output must not contain concrete command pattern '$pattern'."
     }
     Assert-True (-not ($Strategy.PSObject.Properties.Name -contains 'commands')) 'Strategy output must not expose a commands array.'
     Assert-True (-not ($Strategy.PSObject.Properties.Name -contains 'executor')) 'Strategy output must not expose executor data.'
@@ -164,18 +180,67 @@ function Assert-NoConcreteCommands {
 $zipStrategy = Resolve-DeploymentStrategy -ExecutionPlan (New-TestResolvedPlan) -AdapterSelection (New-TestAdapterSelection)
 Assert-Equal $zipStrategy.status 'ready' 'ZIP selection must produce ready strategy.'
 Assert-Equal $zipStrategy.selectedAdapterId 'archive.zip' 'Selected ZIP adapter must be preserved.'
-Assert-Equal ((@($zipStrategy.steps) | ForEach-Object { $_.stepId }) -join ',') 'source.validate,artifact.prepare,archive.create,deployment.approval,remote.release-directory.prepare,remote.archive.upload,remote.archive.extract,remote.application.finalize,deployment.verify' 'Strategy steps must be deterministic.'
-Assert-Equal ((Get-StrategyStep -Strategy $zipStrategy -StepId 'remote.archive.upload').dependsOn -join ',') 'remote.release-directory.prepare' 'Dependencies must be deterministic.'
+Assert-Equal ((@($zipStrategy.steps) | ForEach-Object { $_.stepId }) -join ',') 'source.validate,artifact.prepare,archive.create,deployment.approval,remote.release-directory.prepare,artifact.upload,remote.release.prepare,remote.archive.extract,remote.composer.preflight,remote.composer.install,remote.composer.install.validate,remote.shared-storage.prepare,remote.application.finalize,deployment.verify' 'Strategy steps must be deterministic.'
+Assert-Equal ((Get-StrategyStep -Strategy $zipStrategy -StepId 'artifact.upload').dependsOn -join ',') 'remote.release-directory.prepare' 'Dependencies must be deterministic.'
+Assert-Equal ((Get-StrategyStep -Strategy $zipStrategy -StepId 'remote.release.prepare').dependsOn -join ',') 'artifact.upload' 'Release prepare must depend on artifact transport.'
+Assert-Equal ((Get-StrategyStep -Strategy $zipStrategy -StepId 'remote.archive.extract').dependsOn -join ',') 'remote.release.prepare' 'Remote extraction must depend on release prepare.'
+Assert-Equal ((Get-StrategyStep -Strategy $zipStrategy -StepId 'remote.composer.preflight').dependsOn -join ',') 'remote.archive.extract' 'Composer preflight must depend on archive extraction.'
+Assert-Equal ((Get-StrategyStep -Strategy $zipStrategy -StepId 'remote.composer.install').dependsOn -join ',') 'remote.composer.preflight' 'Composer install must depend on Composer preflight.'
+Assert-Equal ((Get-StrategyStep -Strategy $zipStrategy -StepId 'remote.composer.install.validate').dependsOn -join ',') 'remote.composer.install' 'Composer install validation must depend on Composer install.'
+Assert-Equal ((Get-StrategyStep -Strategy $zipStrategy -StepId 'remote.shared-storage.prepare').dependsOn -join ',') 'remote.composer.install.validate' 'Shared storage prepare must depend on Composer install validation.'
+Assert-Equal ((Get-StrategyStep -Strategy $zipStrategy -StepId 'remote.application.finalize').dependsOn -join ',') 'remote.shared-storage.prepare' 'Application finalization must depend on shared storage preparation.'
 Assert-Equal @($zipStrategy.humanGates).Count 1 'Strategy must create exactly one central deployment approval gate.'
 Assert-Equal $zipStrategy.humanGates[0].gateId 'deployment.approval' 'Deployment approval gate must be present.'
 Assert-Equal (Get-StrategyStep -Strategy $zipStrategy -StepId 'source.validate').actor 'automation' 'Local source validation must be automation.'
 Assert-Equal (Get-StrategyStep -Strategy $zipStrategy -StepId 'archive.create').commandExecutionMode 'automatic' 'Local archive creation must be automatic.'
-foreach ($stepId in @('remote.release-directory.prepare', 'remote.archive.upload', 'remote.archive.extract', 'remote.application.finalize')) {
+Assert-Equal $zipStrategy.artifactTransport.adapterId 'network-share' 'Strategy must expose the network-share artifact transport contract.'
+Assert-Equal $zipStrategy.artifactTransport.containsRemoteCommands $false 'Artifact transport must not contain remote commands.'
+Assert-Equal $zipStrategy.remoteExecution.mode 'interactive-ssh' 'Strategy must expose interactive-ssh as remote execution contract.'
+Assert-Equal $zipStrategy.remoteExecution.startsConnection $false 'interactive-ssh must not start a connection.'
+Assert-Equal $zipStrategy.remoteExecution.readsConnectionContext $false 'interactive-ssh must not read connection context.'
+Assert-Equal $zipStrategy.remoteExecution.derivesHostFromPrompt $false 'interactive-ssh must not derive host data from prompts.'
+Assert-Equal $zipStrategy.deploymentWorkspace.baseDirectory '.deployment' 'Strategy must reserve .deployment as workspace base.'
+Assert-Equal $zipStrategy.deploymentWorkspace.uploadsDirectory '.deployment/uploads' 'Strategy must define upload workspace directory.'
+Assert-Equal $zipStrategy.deploymentWorkspace.workDirectory '.deployment/work' 'Strategy must define work workspace directory.'
+Assert-Equal $zipStrategy.deploymentWorkspace.releasesDirectory '.deployment/releases' 'Strategy must define release workspace directory.'
+Assert-Equal $zipStrategy.deploymentWorkspace.metadataDirectory '.deployment/metadata' 'Strategy must define metadata workspace directory.'
+Assert-Equal $zipStrategy.deploymentWorkspace.rollback.maxCompleteStates 2 'Rollback contract must retain at most two complete states.'
+Assert-Equal $zipStrategy.deploymentWorkspace.rollback.cleanupAfterSuccessfulFinalizationOnly $true 'Rollback cleanup must be post-finalization only.'
+Assert-Equal $zipStrategy.deploymentWorkspace.rollback.preserveExistingStatesOnFailure $true 'Rollback states must be preserved on failure.'
+Assert-Equal $zipStrategy.composerStrategy.composerStrategyId 'composer-strategy-laravel-staging-install-from-lock' 'Strategy must expose the Composer Strategy contract.'
+Assert-True $zipStrategy.sharedStorage.configurationPresent 'Strategy must expose the Shared Storage contract.'
+Assert-True $zipStrategy.sharedStorage.rootResolved 'Strategy must expose the resolved Shared Storage root.'
+Assert-Equal $zipStrategy.sharedStorage.root 'shared' 'Strategy must preserve the explicit Shared Storage root.'
+Assert-Equal @($zipStrategy.sharedStorage.directories).Count 1 'Strategy must carry exactly one shared directory.'
+Assert-Equal @($zipStrategy.sharedStorage.files).Count 0 'Strategy must carry zero shared files.'
+Assert-Equal $zipStrategy.sharedStorage.directories[0].sharedPath 'laravel_app/storage/app/private' 'Strategy must carry the persistent private storage shared path.'
+Assert-Equal $zipStrategy.sharedStorage.directories[0].releaseLinkPath 'laravel_app/storage/app/private' 'Strategy must carry the release link path.'
+Assert-Equal $zipStrategy.sharedStorage.directories[0].conflictPolicy 'fail' 'Strategy must require fail conflict policy.'
+Assert-Equal $zipStrategy.sharedStorage.directories[0].initializationPolicy 'explicit' 'Strategy must require explicit initialization.'
+Assert-Equal $zipStrategy.composerStrategy.installMode 'install-from-lock' 'Composer Strategy must require lockfile based install.'
+Assert-Equal $zipStrategy.composerStrategy.productionMode $true 'Composer Strategy must be production mode.'
+Assert-Equal $zipStrategy.composerStrategy.devDependenciesAllowed $false 'Composer Strategy must disallow dev dependencies.'
+Assert-Equal $zipStrategy.composerStrategy.interactionMode 'non-interactive' 'Composer Strategy must be non-interactive.'
+Assert-Equal $zipStrategy.composerStrategy.installContract.composerCommand 'composer install' 'Composer install contract must define composer install.'
+Assert-Equal (($zipStrategy.composerStrategy.installContract.allowedFlags) -join ',') '--no-dev,--prefer-dist,--optimize-autoloader,--no-interaction' 'Composer install contract must define allowed flags.'
+Assert-True ('--ignore-platform-reqs' -in @($zipStrategy.composerStrategy.installContract.forbiddenFlags)) 'Composer install contract must forbid platform bypass flags.'
+Assert-Equal $zipStrategy.composerStrategy.installContract.writeBoundary.root 'remote.releaseDirectory' 'Composer install contract must define write boundary root.'
+Assert-True ('vendor' -in @($zipStrategy.composerStrategy.installContract.writeBoundary.allowedPaths)) 'Composer install write boundary must allow the vendor directory itself.'
+Assert-True ('vendor/**' -in @($zipStrategy.composerStrategy.installContract.writeBoundary.allowedPaths)) 'Composer install write boundary must allow vendor.'
+Assert-True ('bootstrap/cache' -in @($zipStrategy.composerStrategy.installContract.writeBoundary.allowedPaths)) 'Composer install write boundary must allow the Laravel package discovery directory.'
+Assert-True ('bootstrap/cache/packages.php' -in @($zipStrategy.composerStrategy.installContract.writeBoundary.allowedPaths)) 'Composer install write boundary must allow packages.php.'
+Assert-True ('bootstrap/cache/services.php' -in @($zipStrategy.composerStrategy.installContract.writeBoundary.allowedPaths)) 'Composer install write boundary must allow services.php.'
+Assert-True (-not ('bootstrap/cache/**' -in @($zipStrategy.composerStrategy.installContract.writeBoundary.allowedPaths))) 'Composer install write boundary must not allow arbitrary bootstrap/cache descendants.'
+Assert-True ('storage/**' -in @($zipStrategy.composerStrategy.installContract.writeBoundary.forbiddenPaths)) 'Composer install write boundary must forbid persistent storage.'
+Assert-True ('post-autoload-dump' -in @($zipStrategy.composerStrategy.installContract.scriptExecutionPolicy.allowedScriptNames)) 'Composer script policy must only allow reviewed install lifecycle scripts.'
+Assert-True ('AutoloadPresent' -in @($zipStrategy.composerStrategy.installContract.postValidation.requiredChecks)) 'Composer postvalidation must require autoload.'
+foreach ($stepId in @('remote.release-directory.prepare', 'artifact.upload', 'remote.release.prepare', 'remote.archive.extract', 'remote.composer.preflight', 'remote.composer.install', 'remote.composer.install.validate', 'remote.shared-storage.prepare', 'remote.application.finalize')) {
     $step = Get-StrategyStep -Strategy $zipStrategy -StepId $stepId
     Assert-Equal $step.actor 'human-command' "$stepId must be a human-command step."
     Assert-Equal $step.commandExecutionMode 'copy-and-run' "$stepId must require copy-and-run execution."
     Assert-True $step.feedback.required "$stepId must require feedback."
 }
+Assert-Equal (Get-StrategyStep -Strategy $zipStrategy -StepId 'artifact.upload').executionLocation 'artifact-transport' 'Artifact upload must use artifact-transport location.'
 Assert-Equal (Get-StrategyStep -Strategy $zipStrategy -StepId 'deployment.verify').actor 'review' 'Deployment verification must be a review step.'
 Assert-NoConcreteCommands -Strategy $zipStrategy
 
@@ -257,6 +322,10 @@ $missingPlanInfo = New-TestResolvedPlan
 $missingPlanInfo.environment.applicationRemoteDirectory = ''
 Assert-ThrowsLike -Script { Resolve-DeploymentStrategy -ExecutionPlan $missingPlanInfo -AdapterSelection (New-TestAdapterSelection) | Out-Null } -Pattern "field 'applicationRemoteDirectory' must not be empty" -Message 'Missing necessary plan information must be rejected.'
 
+$missingSharedStorage = New-TestResolvedPlan
+$missingSharedStorage.environment.PSObject.Properties.Remove('sharedStorage')
+Assert-ThrowsLike -Script { Resolve-DeploymentStrategy -ExecutionPlan $missingSharedStorage -AdapterSelection (New-TestAdapterSelection) | Out-Null } -Pattern 'sharedStorage contract is required' -Message 'Missing shared storage contract must be rejected.'
+
 $planInput = New-TestResolvedPlan
 $selectionInput = New-TestAdapterSelection
 $planBefore = $planInput | ConvertTo-Json -Depth 40
@@ -309,8 +378,7 @@ try {
 if ($script:failures.Count -gt 0) {
     Write-Host 'Deployment Strategy tests failed:'
     $script:failures | ForEach-Object { Write-Host "- $_" }
-    exit 1
+    throw 'Deployment Strategy tests failed.'
 }
 
 Write-Host 'Deployment Strategy tests passed.'
-exit 0

@@ -43,7 +43,7 @@ function Read-ExecutorRequestJsonFile {
 
 function Copy-ExecutorRequestObject {
     param([Parameter(Mandatory = $true)][object] $Value)
-    return $Value | ConvertTo-Json -Depth 100 | ConvertFrom-Json
+    return $Value | ConvertTo-Json -Depth 100 | ConvertFrom-Json -NoEnumerate
 }
 
 function Test-ExecutorRequestProperty {
@@ -67,7 +67,7 @@ function Assert-ExecutorRequestBool {
 function Assert-NoExecutorRequestSecrets {
     param([Parameter(Mandatory = $true)][object] $Value, [Parameter(Mandatory = $true)][string] $Context)
     $json = $Value | ConvertTo-Json -Depth 100
-    if ($json -match '(?i)(password=|token=|private key|BEGIN OPENSSH PRIVATE KEY|\.env|api[_-]?key|client[_-]?secret)') {
+    if ($json -match '(?i)(password=|token=|private key|BEGIN OPENSSH PRIVATE KEY|api[_-]?key|client[_-]?secret)') {
         throw "$Context validation failed: secret-like content is not allowed."
     }
 }

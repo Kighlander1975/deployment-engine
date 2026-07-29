@@ -71,7 +71,7 @@ function Test-ExecutionAdmissionObjectLike {
 
 function Test-ExecutionAdmissionSecretLike {
     param([string] $Text)
-    return (-not [string]::IsNullOrEmpty($Text) -and $Text -match '(?i)(password=|token=|private key|BEGIN OPENSSH PRIVATE KEY|\.env|api[_-]?key|client[_-]?secret)')
+    return (-not [string]::IsNullOrEmpty($Text) -and $Text -match '(?i)(password=|token=|private key|BEGIN OPENSSH PRIVATE KEY|api[_-]?key|client[_-]?secret)')
 }
 
 function Assert-NoExecutionAdmissionSecrets {
@@ -84,9 +84,9 @@ function Get-ExecutionAdmissionPlanStatuses { return @('ready', 'incomplete') }
 function Get-ExecutionAdmissionSessionStatuses { return @('created', 'waiting', 'in-progress', 'completed', 'blocked', 'failed', 'cancelled') }
 function Get-ExecutionAdmissionItemStatuses { return @('pending', 'ready', 'waiting-for-human', 'running', 'completed', 'failed', 'skipped', 'blocked', 'cancelled') }
 function Get-ExecutionAdmissionActors { return @('automation', 'human-decision', 'human-command', 'review') }
-function Get-ExecutionAdmissionLocations { return @('local', 'remote', 'local-to-remote', 'decision', 'review') }
+function Get-ExecutionAdmissionLocations { return @('local', 'remote', 'artifact-transport', 'decision', 'review') }
 function Get-ExecutionAdmissionModes { return @('none', 'automatic', 'copy-and-run') }
-function Get-ExecutionAdmissionPrograms { return @('local-operation', 'ssh', 'scp') }
+function Get-ExecutionAdmissionPrograms { return @('local-operation', 'interactive-ssh', 'network-share') }
 function Get-ExecutionAdmissionEventTypes { return @('automation-started', 'automation-result', 'human-decision-submitted', 'human-command-started', 'human-command-result', 'review-result', 'session-cancelled') }
 function Get-ExecutionAdmissionItemEventTypes { return @('automation-started', 'automation-result', 'human-decision-submitted', 'human-command-started', 'human-command-result', 'review-result') }
 
